@@ -107,7 +107,7 @@ pub enum ErrorType {
 #[derive(Debug)]
 pub struct SignaledError {
     /// Descriptive error message.
-    message: String
+    pub message: String
 }
 
 /// Constructs a `SignaledError` from an `ErrorType`.
@@ -197,7 +197,7 @@ impl<T> Signal<T> {
     /// # Examples
     ///
     /// ```
-    /// use signaled::Signal;
+    /// use signaled::{Signaled, Signal};
     ///
     /// let signal = Signal::new(|old: &i32, new: &i32| println!("Old: {} | New: {}", old, new));
     /// let signaled = Signaled::new(5);
@@ -391,7 +391,7 @@ impl<T> Signaled<T> {
     /// # Examples
     ///
     /// ```
-    /// use signaled::{Signaled};
+    /// use signaled::{Signaled, Signal};
     ///
     /// let signaled = Signaled::new(0);
     /// signaled.add_signal(Signal::new(|old, new| println!("Old: {} | New: {}", old, new)));
@@ -691,8 +691,6 @@ impl<T: Clone> Signaled<T> {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-fn main() {
-}
 
 #[cfg(test)]
 mod tests {
