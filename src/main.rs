@@ -786,4 +786,26 @@ mod tests {
         signaled.set(0).unwrap();
         assert_eq!(test_value.get(), 'a'); // `signal_a` has now the lowest priority (1) so after all callbacks are invoked the valuew ill be 'a'.
     }
+
+    #[test]
+    fn test_borrow_error() {
+        let signaled = Signaled::new(0);
+        let _borrow = signaled.get_ref().unwrap();
+        let result = signaled.set(1);
+        assert!(matches!(
+            result,
+            Err(SignaledError { message }) if message == "Cannot mutably borrow Signaled value, it is already borrowed"
+        ));
+    }
+
+    #[test]
+    fn test_invalid_signal_id_error() {
+        let signaled = Signaled::new(0);
+        let signal_id = signaled.add_signal(Signal::new(|_, _| {})).unwrap();
+        let invalid_id = signal_id + 1;
+        assert!(matches!(
+            signaled.set_signal_callback(invalid_id, |_, _| {}),
+            Err(SignaledError { message }) if message == format!("Signal ID '{}' does not match any Signal", invalid_id))
+        );
+    }
 }
