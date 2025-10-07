@@ -10,6 +10,7 @@ making it ideal for reactive UI updates, event handling, or state management.
 - **Reactive Updates**: Update a value and automatically emit signals to registered callbacks.
 - **Priority-Based Signals**: Signals are executed in descending priority order.
 - **Conditional Triggers**: Signals can have trigger functions to control callback execution.
+- **One-Time Signals**: Signals can be flagged as `once` making them only be called once and then removed from the Signaled Signal collection.
 - **Safe Mutability**: Uses `RefCell` for interior mutability with runtime borrow checking.
 - **Error Handling**: Returns `Result` with `SignaledError` for borrow conflicts and invalid signal IDs.
 
