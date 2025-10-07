@@ -624,7 +624,7 @@ impl<T: Clone> Signaled<T> {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-fn main() {    
+fn main() {
 }
 
 #[cfg(test)]
@@ -638,8 +638,8 @@ mod tests {
 
         let signaled = Signaled::new(1);
         signaled.add_signal(Signal::new(move |_, _| { calls_clone.set(calls_clone.get() + 1) })).unwrap();
-        signaled.set(2).unwrap(); // Calls = 1
 
+        signaled.set(2).unwrap(); // Calls = 1
         assert_eq!(calls.get(), 1);
     }
 
@@ -655,8 +655,9 @@ mod tests {
         signaled.add_signal(signal).unwrap();
 
         signaled.set(4).unwrap(); // This does not meet the trigger condition (new_value < 5). Calls = 0
+        assert_eq!(calls.get(), 0);
+        
         signaled.set(6).unwrap(); // This does meet the trigger condition (new_value > 5). Calls = 1
-
         assert_eq!(calls.get(), 1);
     }
 
@@ -669,10 +670,14 @@ mod tests {
         let signal_id = signaled.add_signal(Signal::new(move |_, _| { calls_clone.set(calls_clone.get() + 1) })).unwrap();
         
         signaled.set(2).unwrap(); // Calls = 1
-        signaled.set(3).unwrap(); // Calls = 2
-        signaled.remove_signal(signal_id).unwrap();
-        signaled.set(4).unwrap();// Calls = 2
+        assert_eq!(calls.get(), 1);
 
+        signaled.set(3).unwrap(); // Calls = 2
+        assert_eq!(calls.get(), 2);
+
+        signaled.remove_signal(signal_id).unwrap(); // Signal removed so `calls` will not increase when `signaled` emits.
+
+        signaled.set(4).unwrap();// Calls = 2
         assert_eq!(calls.get(), 2);
     }
 
@@ -688,10 +693,97 @@ mod tests {
         let signal_id = signaled.add_signal(signal).unwrap();
 
         signaled.set(4).unwrap(); // This does not meet the trigger condition (new_value < 5). Calls = 0
-        signaled.set(6).unwrap(); // This does meet the trigger condition (new_value > 5). Calls = 1
-        signaled.remove_signal_trigger(signal_id).unwrap(); // Trigger condition removed so `new_value` will always invoke callback.
-        signaled.set(4).unwrap(); // Calls = 2
+        assert_eq!(calls.get(), 0);
 
+        signaled.set(6).unwrap(); // This does meet the trigger condition (new_value > 5). Calls = 1
+        assert_eq!(calls.get(), 1);
+
+        signaled.remove_signal_trigger(signal_id).unwrap(); // Trigger condition removed so `new_value` will always invoke callback.
+
+        signaled.set(4).unwrap(); // Calls = 2
         assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn test_change_signal() {
+        let calls = Rc::new(Cell::new(0));
+        let calls_clone = Rc::clone(&calls);
+
+        let signaled = Signaled::new(1);
+        let signal_id = signaled.add_signal(Signal::new(move |_, _| { calls_clone.set(calls_clone.get() + 1) })).unwrap();
+        
+        signaled.set(2).unwrap(); // Calls = 1
+        assert_eq!(calls.get(), 1);
+
+        signaled.set(3).unwrap(); // Calls = 2
+        assert_eq!(calls.get(), 2);
+
+        let calls_clone = Rc::clone(&calls);
+        signaled.set_signal_callback(signal_id,  move |_, _| { calls_clone.set(calls_clone.get() + 2); }).unwrap(); // New callback increases call count by 2.
+
+        signaled.set(4).unwrap();// Calls = 4
+        assert_eq!(calls.get(), 4);
+    }
+
+    #[test]
+    fn test_change_trigger() {
+        let calls = Rc::new(Cell::new(0));
+        let calls_clone = Rc::clone(&calls);
+
+        let signal: Signal<i32> = Signal::new(move |_, _| { calls_clone.set(calls_clone.get() + 1) });
+        signal.set_trigger(|_, new| *new > 5).unwrap(); // Signal will only invoke callback if the `new_value` is greater than 5.
+
+        let signaled = Signaled::new(1);
+        let signal_id = signaled.add_signal(signal).unwrap();
+
+        signaled.set(4).unwrap(); // This does not meet the trigger condition (new_value < 5). Calls = 0
+        assert_eq!(calls.get(), 0);
+
+        signaled.set(6).unwrap(); // This does meet the trigger condition (new_value > 5). Calls = 1
+        assert_eq!(calls.get(), 1);
+
+        signaled.set_signal_trigger(signal_id, |_, new| { *new < 5 }).unwrap(); // Trigger condition changed so `new_value` being < 5 will invoke callback.
+
+        signaled.set(6).unwrap(); // This does not meet the new trigger condition (new_value > 5). Calls = 1
+        assert_eq!(calls.get(), 1);
+
+        signaled.set(4).unwrap(); // This does meet the new trigger condition (new value < 5). Calls = 2
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn test_priority() {
+        let signaled = Signaled::new(0);
+
+        let test_value = Rc::new(Cell::new(' '));
+        
+        let test_value_clone = Rc::clone(&test_value);
+        let signal_a: Signal<i32> = Signal::new(move |_, _| { test_value_clone.set('a'); });
+        signal_a.set_priority(3);
+
+        let test_value_clone = Rc::clone(&test_value);
+        let signal_b: Signal<i32> = Signal::new(move |_, _| { assert_eq!(test_value_clone.get(), 'a'); }); // Signal in the middle with a callback that checks that `signal_a` callback has been invoked first.
+        signal_b.set_priority(2);
+
+        let test_value_clone = Rc::clone(&test_value);
+        let signal_c: Signal<i32> = Signal::new(move |_, _| { test_value_clone.set('c'); });
+        signal_c.set_priority(1);
+
+        let signal_a_id = signaled.add_signal(signal_a).unwrap();
+        let signal_b_id = signaled.add_signal(signal_b).unwrap();
+        let signal_c_id = signaled.add_signal(signal_c).unwrap();
+
+        signaled.set(0).unwrap();
+        assert_eq!(test_value.get(), 'c'); // `signal_c` has the lowest priority (1) so after all callbacks are invoked the value will be 'c'.
+
+        signaled.set_signal_priority(signal_a_id, 1).unwrap(); // Set priority to 1, `signal_a` will now be the last to execute.
+
+        let test_value_clone = Rc::clone(&test_value);
+        signaled.set_signal_callback(signal_b_id, move |_, _| { assert_eq!(test_value_clone.get(), 'c') }).unwrap(); // Modify signal in the middle callback to check that `signal_c` callback has been invoked first.
+
+        signaled.set_signal_priority(signal_c_id, 3).unwrap(); // Set priority to 3, `signal_c` will now be the first to execute.
+
+        signaled.set(0).unwrap();
+        assert_eq!(test_value.get(), 'a'); // `signal_a` has now the lowest priority (1) so after all callbacks are invoked the valuew ill be 'a'.
     }
 }
