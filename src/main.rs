@@ -238,8 +238,8 @@ impl<T: Display> Display for Signaled<T> {
 impl<T: Clone> Clone for Signaled<T> {
     fn clone(&self) -> Self {
         Signaled {
-            value: RefCell::new(self.value.borrow().clone()),
-            signals: RefCell::new(self.signals.borrow().clone())
+            value: self.value.clone(),
+            signals: self.signals.clone()
         }
     }
 }
