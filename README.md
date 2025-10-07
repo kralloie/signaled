@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="https://github.com/kralloie/signaled/actions/workflows/tests.yml/badge.svg" alt="Tests">
+  <img src="https://github.com/kralloie/signaled/actions/workflows/docs.yml/badge.svg" alt="Docs">
+</p>
+
 # Signaled 📡
 
 A lightweight reactive programming library for Rust, providing a signal-slot mechanism.
