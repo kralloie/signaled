@@ -1,4 +1,4 @@
-# Signaled
+# Signaled 📡
 
 A lightweight reactive programming library for Rust, providing a signal-slot mechanism.
 `Signaled<T>` holds a value of type `T` and a collection of `Signal<T>` instances, which are
