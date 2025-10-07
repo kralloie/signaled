@@ -1,6 +1,7 @@
 <p align="center">
   <img src="https://github.com/kralloie/signaled/actions/workflows/tests.yml/badge.svg" alt="Tests">
   <img src="https://github.com/kralloie/signaled/actions/workflows/docs.yml/badge.svg" alt="Docs">
+  <img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="License">
 </p>
 
 # Signaled 📡
