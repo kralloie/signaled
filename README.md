@@ -1,10 +1,12 @@
-<p align="center">
-  <img src="https://github.com/kralloie/signaled/actions/workflows/tests.yml/badge.svg" alt="Tests">
-  <img src="https://github.com/kralloie/signaled/actions/workflows/docs.yml/badge.svg" alt="Docs">
-  <img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="License">
-</p>
+<div align="center">
 
 # Signaled 📡
+
+<img src="https://github.com/kralloie/signaled/actions/workflows/tests.yml/badge.svg" alt="Tests">
+<img src="https://github.com/kralloie/signaled/actions/workflows/docs.yml/badge.svg" alt="Docs">
+<img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
+</div>
+<br>
 
 A lightweight reactive programming library for Rust, providing a signal-slot mechanism.
 `Signaled<T>` holds a value of type `T` and a collection of `Signal<T>` instances, which are
