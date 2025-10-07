@@ -272,6 +272,16 @@ impl<T> Signal<T> {
         Ok(())
     }
 
+    /// Removes the signal trigger condition.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns `SignaledError` if the trigger is already borrowed.
+    pub fn remove_trigger(&self) -> Result<(), SignaledError> {
+        *self.trigger.try_borrow_mut().map_err(|_| signaled_error(ErrorType::BorrowMutError { source: ErrorSource::SignalTrigger }))? = Rc::new(|_, _| true);
+        Ok(())
+    }
+
     /// Sets the execution priority of the signal.
     /// 
     /// Default priority is 1.
@@ -492,6 +502,24 @@ impl<T> Signaled<T> {
         }
     }
 
+    /// Removes the trigger condition for a signal by ID.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `id` - The ID of the signal.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns `SignaledError` if the signals collection or signal trigger is already borrowed or if the provided `SignalId` does not match any `Signal`.
+    pub fn remove_signal_trigger(&self, id: SignalId) -> Result<(), SignaledError> {
+        let signals = self.signals.try_borrow().map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
+        if let Some(signal) = signals.iter().find(|s| s.id == id) {
+            return signal.remove_trigger()
+        } else {
+            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+        }
+    }
+
     /// Sets the priority for a signal by ID.
     ///
     /// # Arguments
@@ -524,7 +552,10 @@ impl<T: Display> Display for Signaled<T> {
         let mut signals_len = 0;
         let signals_string: String = self.signals.try_borrow().map(|s| {
             signals_len = s.len();
-            s.iter().map(|signal| format!("{}", signal)).collect::<Vec<_>>().join(", ")
+            s.iter()
+                .map(|signal| format!("{}", signal))
+                .collect::<Vec<_>>()
+                .join(", ")
         }).unwrap_or_else(|_| "<borrowed>".to_string());
         write!(f, "Signaled {{ value: {}, signal_count: {}, signals: [{}] }}", value, signals_len, signals_string)
     }
@@ -593,10 +624,74 @@ impl<T: Clone> Signaled<T> {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-fn main() {
+fn main() {    
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_signal() {
+        let calls = Rc::new(Cell::new(0));
+        let calls_clone = Rc::clone(&calls);
+
+        let signaled = Signaled::new(1);
+        signaled.add_signal(Signal::new(move |_, _| { calls_clone.set(calls_clone.get() + 1) })).unwrap();
+        signaled.set(2).unwrap(); // Calls = 1
+
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn test_signal_trigger() {
+        let calls = Rc::new(Cell::new(0));
+        let calls_clone = Rc::clone(&calls);
+
+        let signal: Signal<i32> = Signal::new(move |_, _| { calls_clone.set(calls_clone.get() + 1) });
+        signal.set_trigger(|_, new| *new > 5).unwrap(); // Signal will only invoke callback if the `new_value` is greater than 5.
+
+        let signaled = Signaled::new(1);
+        signaled.add_signal(signal).unwrap();
+
+        signaled.set(4).unwrap(); // This does not meet the trigger condition (new_value < 5). Calls = 0
+        signaled.set(6).unwrap(); // This does meet the trigger condition (new_value > 5). Calls = 1
+
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn test_remove_signal() {
+        let calls = Rc::new(Cell::new(0));
+        let calls_clone = Rc::clone(&calls);
+
+        let signaled = Signaled::new(1);
+        let signal_id = signaled.add_signal(Signal::new(move |_, _| { calls_clone.set(calls_clone.get() + 1) })).unwrap();
+        
+        signaled.set(2).unwrap(); // Calls = 1
+        signaled.set(3).unwrap(); // Calls = 2
+        signaled.remove_signal(signal_id).unwrap();
+        signaled.set(4).unwrap();// Calls = 2
+
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn test_remove_trigger() {
+        let calls = Rc::new(Cell::new(0));
+        let calls_clone = Rc::clone(&calls);
+
+        let signal: Signal<i32> = Signal::new(move |_, _| { calls_clone.set(calls_clone.get() + 1) });
+        signal.set_trigger(|_, new| *new > 5).unwrap(); // Signal will only invoke callback if the `new_value` is greater than 5.
+
+        let signaled = Signaled::new(1);
+        let signal_id = signaled.add_signal(signal).unwrap();
+
+        signaled.set(4).unwrap(); // This does not meet the trigger condition (new_value < 5). Calls = 0
+        signaled.set(6).unwrap(); // This does meet the trigger condition (new_value > 5). Calls = 1
+        signaled.remove_signal_trigger(signal_id).unwrap(); // Trigger condition removed so `new_value` will always invoke callback.
+        signaled.set(4).unwrap(); // Calls = 2
+
+        assert_eq!(calls.get(), 2);
+    }
 }
