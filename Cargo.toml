@@ -1,7 +1,7 @@
 [package]
 name = "signaled"
 version = "0.1.0"
-edition = "2025"
+edition = "2024"
 description = "A lightweight reactive programming library for Rust, providing a signal-slot mechanism."
 license = ""
 repository = "https://github.com/kralloie/signaled"
