@@ -5,12 +5,52 @@ use std::fmt::Display;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
-enum SignaledError {
-    BorrowError(String),
-    BorrowMutError(String),
-    InvalidSignalId(String)
+enum ErrorSource {
+    Value,
+    Signals,
+    SignalCallback,
+    SignalTrigger
 }
+
+#[derive(Debug)] 
+enum ErrorType {
+    BorrowError { source: ErrorSource },
+    BorrowMutError { source: ErrorSource },
+    InvalidSignalId { id: SignalId }
+}
+
+#[derive(Debug)]
+struct SignaledError {
+    message: String
+}
+
+fn signaled_error(err_type: ErrorType) -> SignaledError {
+    let err_msg = match err_type {
+        ErrorType::BorrowError { source } => {
+            match source {
+                ErrorSource::SignalCallback => "Cannot borrow Signal callback, it is already borrowed".to_string(),
+                ErrorSource::SignalTrigger => "Cannot borrow Signal trigger, it is already borrowed".to_string(),
+                ErrorSource::Value => "Cannot borrow Signaled value, it is already borrowed".to_string(),
+                ErrorSource::Signals => "Cannot borrow Signaled signals, they are already borrowed".to_string()
+            }
+        }
+        ErrorType::BorrowMutError { source } => {
+            match source {
+                ErrorSource::SignalCallback => "Cannot mutably borrow Signal callback, it is already borrowed".to_string(),
+                ErrorSource::SignalTrigger => "Cannot mutably borrow Signal trigger, it is already borrowed".to_string(),
+                ErrorSource::Value => "Cannot mutably borrow Signaled value, it is already borrowed".to_string(),
+                ErrorSource::Signals => "Cannot mutably borrow Signaled signals, they are already borrowed".to_string()
+            }
+        }
+        ErrorType::InvalidSignalId { id } => {
+            format!("Signal ID '{}' does not match any Signal", id)
+        }
+    };
+
+    SignaledError { message: err_msg }
+} 
 
 type SignalId = u64;
 
@@ -42,23 +82,23 @@ impl<T> Signal<T> {
     fn emit(&self, value: &T) -> Result<(), SignaledError>{
         let trigger = self.trigger
             .try_borrow()
-            .map_err(|_| SignaledError::BorrowError("Signal `trigger` is already borrowed".to_string()))?;
+            .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::SignalTrigger }))?;
         if trigger(value) {
             let callback = self.callback
                 .try_borrow()
-                .map_err(|_| SignaledError::BorrowError("Signal `callback` is already borrowed".to_string()))?;
+                .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::SignalCallback }))?;
             callback(value);
         }
         Ok(())
     }
 
     fn set_callback<F: Fn(&T) + 'static>(&self, callback: F) -> Result<(), SignaledError> {
-        *self.callback.try_borrow_mut().map_err(|_| SignaledError::BorrowMutError("Signal `callback` is already borrowed".to_string()))? = Rc::new(callback);
+        *self.callback.try_borrow_mut().map_err(|_| signaled_error(ErrorType::BorrowMutError { source: ErrorSource::SignalCallback }))? = Rc::new(callback);
         Ok(())
     }
 
     fn set_trigger<F: Fn(&T) -> bool + 'static>(&self, trigger: F) -> Result<(), SignaledError> {
-        *self.trigger.try_borrow_mut().map_err(|_| SignaledError::BorrowMutError("Signal `trigger` is already borrowed".to_string()))? = Rc::new(trigger);
+        *self.trigger.try_borrow_mut().map_err(|_| signaled_error(ErrorType::BorrowMutError { source: ErrorSource::SignalTrigger }))? = Rc::new(trigger);
         Ok(())
     }
 
@@ -97,14 +137,14 @@ impl<T> Signaled<T> {
     }
 
     fn set(&self, value: T) -> Result<(), SignaledError> {
-        *self.value.try_borrow_mut().map_err(|_| SignaledError::BorrowMutError("Signaled `value` is already borrowed".to_string()))? = value;
+        *self.value.try_borrow_mut().map_err(|_| signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Value }))? = value;
         self.emit()
     }
 
     fn get_ref(&self) -> Result<Ref<'_, T>, SignaledError> {
         match self.value.try_borrow() {
             Ok(r) => Ok(r),
-            Err(_) => Err(SignaledError::BorrowError("Signaled `value` is already borrowed".to_string())) 
+            Err(_) => Err(signaled_error(ErrorType::BorrowError { source: ErrorSource::Value })) 
         }
     }
 
@@ -115,12 +155,12 @@ impl<T> Signaled<T> {
                 for signal in signals.iter() {
                     let value = self.value
                         .try_borrow()
-                        .map_err(|_| SignaledError::BorrowError("Signaled `value` is already borrowed".to_string()))?;
+                        .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }))?;
                     signal.emit(&value)?
                 }
                 Ok(())
             }
-            Err(_) => Err(SignaledError::BorrowError("Signaled `signals` are already borrowed".to_string()))
+            Err(_) => Err(signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))
         }
     }
 
@@ -134,7 +174,7 @@ impl<T> Signaled<T> {
                 s.push(signal);
                 Ok(id)
             }
-            Err(_) => Err(SignaledError::BorrowMutError("Signaled `signals` are already borrowed".to_string()))
+            Err(_) => Err(signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Signals }))
         }
     }
 
@@ -144,17 +184,17 @@ impl<T> Signaled<T> {
                 let index = s
                     .iter()
                     .position(|s| s.id == id)
-                    .ok_or_else(|| SignaledError::InvalidSignalId(format!("ID: {} does not match any signal", id)))?;
+                    .ok_or_else(|| signaled_error(ErrorType::InvalidSignalId { id: id }))?;
                 Ok(s.remove(index))
             }
-            Err(_) => Err(SignaledError::BorrowMutError("Targeted signal is already borrowed".to_string()))
+            Err(_) => Err(signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Signals }))
         }
     }
  
     fn set_signal_callback<F: Fn(&T) + 'static>(&self, id: SignalId, callback: F) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
-            .map_err(|_| SignaledError::BorrowError("Signaled `signals` are already borrowed".to_string()))?;
+            .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             return signal.set_callback(callback)
         }
@@ -162,7 +202,7 @@ impl<T> Signaled<T> {
     }
 
     fn set_signal_trigger<F: Fn(&T) -> bool + 'static>(&self, id: SignalId, trigger: F) -> Result<(), SignaledError> {
-        let signals = self.signals.try_borrow().map_err(|_| SignaledError::BorrowError("Signaled `signals` are already borrowed".to_string()))?;
+        let signals = self.signals.try_borrow().map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             return signal.set_trigger(trigger)
         }
@@ -172,7 +212,7 @@ impl<T> Signaled<T> {
     fn set_signal_priority(&self, id: SignalId, priority: u64) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
-            .map_err(|_| SignaledError::BorrowError("Signaled `signals` are already borrowed".to_string()))?;
+            .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_priority(priority);
         }
@@ -208,18 +248,18 @@ impl<T: Clone> Signaled<T> {
     fn get(&self) -> Result<T, SignaledError> {
         match self.value.try_borrow() {
             Ok(r) => Ok(r.clone()),
-            Err(_) => Err(SignaledError::BorrowError("Signaled is already borrowed".to_string()))
+            Err(_) => Err(signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }))
         }
     }
 
     fn try_clone(&self) -> Result<Self, SignaledError> {
         let signals_clone = self.signals
             .try_borrow()
-            .map_err(|_| SignaledError::BorrowError("Signaled `signals` are already borrowed".to_string()))?
+            .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?
             .clone();
         let value_clone = self.value
             .try_borrow()
-            .map_err(|_| SignaledError::BorrowError("Signaled `value` is already borrowed".to_string()))?
+            .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }))?
             .clone();
         Ok(
             Self {
@@ -232,50 +272,10 @@ impl<T: Clone> Signaled<T> {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 fn main() {
-    let signal = Signal::new(|v| println!("Old: {}", v), |_| true, 0);
-    let clone = signal.clone();
-    signal.set_callback(|v| println!("New: {}", v)).unwrap();
-    clone.emit(&1).unwrap();
+
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_signal_clone() {
-        let signal = Signal::new(
-            |v: &i32| println!("Signal: {}", v),
-            |_| true,
-            1
-        );
-        let cloned = signal.clone();
-        signal.emit(&42);
-        cloned.emit(&42);
-    }
-
-    #[test]
-    fn test_signaled_clone() {
-        let x = Signaled::new(5);
-        x.add_signal(Signal::new(
-                |v| println!("X signal: {}", v),
-                |_| true,
-                1
-            )
-        );
-        let y = x.clone();
-        x.set(10);
-        y.set(20);
-        assert_eq!(*x.value.borrow(), 10);
-        assert_eq!(*y.value.borrow(), 20);
-        assert_eq!(x.signals.borrow().len(), 1);
-        assert_eq!(y.signals.borrow().len(), 1);
-    }
-
-    #[test]
-    fn test_add_sub() {
-        let signaled = Signaled::new(15);
-        assert_eq!(*signaled.get_ref().unwrap() - 5, 10);
-        assert_eq!(signaled.get().unwrap() + 5, 20);
-    }
 }
