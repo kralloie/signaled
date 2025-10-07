@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Source of an error in the `Signaled` or `Signal` structs.
 #[derive(Debug)]
-enum ErrorSource {
+pub enum ErrorSource {
     /// Error related to the `value` field of `Signaled`.
     Value,
     /// Error related to the `signals` vector of `Signaled`.
@@ -21,7 +21,7 @@ enum ErrorSource {
 
 /// Type of error when manipulating `Signaled` or `Signal` structs. 
 #[derive(Debug)] 
-enum ErrorType {
+pub enum ErrorType {
     /// Attempted to immutably borrow a `RefCell` wrapped field that is already borrowed.
     BorrowError { source: ErrorSource },
     /// Attempted to mutably borrow a `RefCell` wrapped field that is already borrowed.
@@ -34,7 +34,7 @@ enum ErrorType {
 /// 
 /// Contains a descriptive message indicating the source and type of the error, such as borrow conflicts or invalid signal IDs.
 #[derive(Debug)]
-struct SignaledError {
+pub struct SignaledError {
     /// Descriptive error message.
     message: String
 }
@@ -44,7 +44,7 @@ struct SignaledError {
 /// # Arguments
 /// 
 /// * `err_type` - `ErrorType` that represents the type of the error and contains a field representing the source of the error.
-fn signaled_error(err_type: ErrorType) -> SignaledError {
+pub fn signaled_error(err_type: ErrorType) -> SignaledError {
     let err_msg = match err_type {
         ErrorType::BorrowError { source } => {
             match source {
@@ -81,7 +81,7 @@ static SIGNAL_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// # Panics 
 /// 
 /// Panics in debug builds if the ID counter overflows (`u64::MAX`).
-fn new_signal_id() -> SignalId {
+pub fn new_signal_id() -> SignalId {
     let id = SIGNAL_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     debug_assert!(id != u64::MAX, "SignalId counter overflow");
     id
@@ -101,7 +101,7 @@ fn new_signal_id() -> SignalId {
 /// signaled.add_signal(signal).unwrap();
 /// signaled.set(42).unwrap(); // Prints "Value: 42"
 /// ```
-struct Signal<T> {
+pub struct Signal<T> {
     /// Function to run when the signal is emitted and the trigger condition is met.
     callback: RefCell<Rc<dyn Fn(&T)>>,
     /// Function that decides if the callback will be invoked or not when the signal is emitted.
@@ -129,7 +129,7 @@ impl<T> Signal<T> {
     /// signaled.add_signal(signal).unwrap();
     /// signaled.set(6).unwrap(); // Prints "Value: 6"
     /// ```
-    fn new<F: Fn(&T) + 'static>(callback: F) -> Self {
+    pub fn new<F: Fn(&T) + 'static>(callback: F) -> Self {
         Signal {
             callback: RefCell::new(Rc::new(callback)),
             trigger: RefCell::new(Rc::new(|_| true)),
@@ -154,7 +154,7 @@ impl<T> Signal<T> {
     /// signal.emit(&4).unwrap() // Doesn't print because trigger condition is not met.
     /// signal.emit(&6).unwrap() // Prints "Value: 6"
     /// ```
-    fn emit(&self, value: &T) -> Result<(), SignaledError>{
+    pub fn emit(&self, value: &T) -> Result<(), SignaledError>{
         let trigger = self.trigger
             .try_borrow()
             .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::SignalTrigger }))?;
@@ -176,7 +176,7 @@ impl<T> Signal<T> {
     /// # Errors
     /// 
     /// Returns `SignaledError` if the callback is already borrowed.
-    fn set_callback<F: Fn(&T) + 'static>(&self, callback: F) -> Result<(), SignaledError> {
+    pub fn set_callback<F: Fn(&T) + 'static>(&self, callback: F) -> Result<(), SignaledError> {
         *self.callback.try_borrow_mut().map_err(|_| signaled_error(ErrorType::BorrowMutError { source: ErrorSource::SignalCallback }))? = Rc::new(callback);
         Ok(())
     }
@@ -192,7 +192,7 @@ impl<T> Signal<T> {
     /// # Errors
     /// 
     /// Returns `SignaledError` if the trigger is already borrowed.
-    fn set_trigger<F: Fn(&T) -> bool + 'static>(&self, trigger: F) -> Result<(), SignaledError> {
+    pub fn set_trigger<F: Fn(&T) -> bool + 'static>(&self, trigger: F) -> Result<(), SignaledError> {
         *self.trigger.try_borrow_mut().map_err(|_| signaled_error(ErrorType::BorrowMutError { source: ErrorSource::SignalTrigger }))? = Rc::new(trigger);
         Ok(())
     }
@@ -204,7 +204,7 @@ impl<T> Signal<T> {
     /// # Arguments
     /// 
     /// * `priority` The new priority number, bigger number means higher priority.
-    fn set_priority(&self, priority: u64) {
+    pub fn set_priority(&self, priority: u64) {
         self.priority.set(priority);
     }
 }
@@ -251,7 +251,7 @@ impl<T> Clone for Signal<T> {
 /// signaled.add_signal(Signal::new(|v| println!("Value: {}", v))).unwrap();
 /// signaled.set(42).unwrap(); // Prints "Value: 42"
 /// ```
-struct Signaled<T> {
+pub struct Signaled<T> {
     /// Reactive value, the mutation of this value through `set` will emit all `Signal<T>` inside `signals`.
     value: RefCell<T>,
     /// Collection of signals that will be emitted when `value` is changed through `set`.
@@ -264,7 +264,7 @@ impl<T> Signaled<T> {
     /// # Arguments
     ///
     /// * `value` - The initial value.
-    fn new(value: T) -> Self {
+    pub fn new(value: T) -> Self {
         Self {
             value: RefCell::new(value),
             signals: RefCell::new(Vec::new())
@@ -290,7 +290,7 @@ impl<T> Signaled<T> {
     /// signaled.add_signal(Signal::new(|v| println!("Value: {}", v)));
     /// signaled.set(1); /// Prints "Value: 1"
     /// ```
-    fn set(&self, value: T) -> Result<(), SignaledError> {
+    pub fn set(&self, value: T) -> Result<(), SignaledError> {
         *self.value.try_borrow_mut().map_err(|_| signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Value }))? = value;
         self.emit()
     }
@@ -300,7 +300,7 @@ impl<T> Signaled<T> {
     /// # Errors
     /// 
     /// Returns `SignaledError` if the value is already borrowed.
-    fn get_ref(&self) -> Result<Ref<'_, T>, SignaledError> {
+    pub fn get_ref(&self) -> Result<Ref<'_, T>, SignaledError> {
         match self.value.try_borrow() {
             Ok(r) => Ok(r),
             Err(_) => Err(signaled_error(ErrorType::BorrowError { source: ErrorSource::Value })) 
@@ -312,7 +312,7 @@ impl<T> Signaled<T> {
     /// # Errors
     /// 
     /// Returns `SignaledError` if the value or any of the signals are already borrowed.
-    fn emit(&self) -> Result<(), SignaledError> {
+    pub fn emit(&self) -> Result<(), SignaledError> {
         match self.signals.try_borrow_mut() {
             Ok(mut signals) => {
                 signals.sort_by(|a, b| b.priority.get().cmp(&a.priority.get()));
@@ -338,7 +338,7 @@ impl<T> Signaled<T> {
     /// # Errors
     /// 
     /// Returns `SignaledError` if the signals collection is already borrowed.
-    fn add_signal(&self, signal: Signal<T>) -> Result<SignalId, SignaledError> {
+    pub fn add_signal(&self, signal: Signal<T>) -> Result<SignalId, SignaledError> {
         match self.signals.try_borrow_mut() {
             Ok(mut s) => {
                 let id = signal.id;
@@ -361,7 +361,7 @@ impl<T> Signaled<T> {
     /// # Errors
     ///
     /// Returns `SignaledError` if the signals collection is already borrowed or the ID is invalid.
-    fn remove_signal(&self, id: SignalId) -> Result<Signal<T>, SignaledError>{
+    pub fn remove_signal(&self, id: SignalId) -> Result<Signal<T>, SignaledError>{
         match self.signals.try_borrow_mut() {
             Ok(mut s) => {
                 let index = s
@@ -388,7 +388,7 @@ impl<T> Signaled<T> {
     /// # Notes
     ///
     /// If the ID does not exist, the operation is a no-op and returns `Ok(())`.
-    fn set_signal_callback<F: Fn(&T) + 'static>(&self, id: SignalId, callback: F) -> Result<(), SignaledError> {
+    pub fn set_signal_callback<F: Fn(&T) + 'static>(&self, id: SignalId, callback: F) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
             .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
@@ -412,7 +412,7 @@ impl<T> Signaled<T> {
     /// # Notes
     ///
     /// If the ID does not exist, the operation is a no-op and returns `Ok(())`.
-    fn set_signal_trigger<F: Fn(&T) -> bool + 'static>(&self, id: SignalId, trigger: F) -> Result<(), SignaledError> {
+    pub fn set_signal_trigger<F: Fn(&T) -> bool + 'static>(&self, id: SignalId, trigger: F) -> Result<(), SignaledError> {
         let signals = self.signals.try_borrow().map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             return signal.set_trigger(trigger)
@@ -434,7 +434,7 @@ impl<T> Signaled<T> {
     /// # Notes
     ///
     /// If the ID does not exist, the operation is a no-op and returns `Ok(())`.
-    fn set_signal_priority(&self, id: SignalId, priority: u64) -> Result<(), SignaledError> {
+    pub fn set_signal_priority(&self, id: SignalId, priority: u64) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
             .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
@@ -481,7 +481,7 @@ impl<T: Clone> Signaled<T> {
     /// # Errors
     ///
     /// Returns `SignaledError` if the value is already borrowed.
-    fn get(&self) -> Result<T, SignaledError> {
+    pub fn get(&self) -> Result<T, SignaledError> {
         match self.value.try_borrow() {
             Ok(r) => Ok(r.clone()),
             Err(_) => Err(signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }))
@@ -504,7 +504,7 @@ impl<T: Clone> Signaled<T> {
     /// s1.set(1).unwrap();
     /// assert_eq!(s2.get().unwrap(), 0); // Independent copy
     /// ```
-    fn try_clone(&self) -> Result<Self, SignaledError> {
+    pub fn try_clone(&self) -> Result<Self, SignaledError> {
         let signals_clone = self.signals
             .try_borrow()
             .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?
