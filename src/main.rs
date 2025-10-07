@@ -452,7 +452,7 @@ impl<T> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns `SignaledError` if the signals collection or signal callback is already borrowed.
+    /// Returns `SignaledError` if the signals collection or signal callback is already borrowed or if the provided `SignalId` does not match any `Signal`..
     ///
     /// # Notes
     ///
@@ -463,8 +463,9 @@ impl<T> Signaled<T> {
             .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             return signal.set_callback(callback)
+        } else {
+            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
         }
-        Ok(())
     }
 
     /// Sets the trigger condition for a signal by ID.
@@ -476,7 +477,7 @@ impl<T> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns `SignaledError` if the signals collection or signal trigger is already borrowed.
+    /// Returns `SignaledError` if the signals collection or signal trigger is already borrowed or if the provided `SignalId` does not match any `Signal`..
     ///
     /// # Notes
     ///
@@ -485,8 +486,9 @@ impl<T> Signaled<T> {
         let signals = self.signals.try_borrow().map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             return signal.set_trigger(trigger)
+        } else {
+            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
         }
-        Ok(())
     }
 
     /// Sets the priority for a signal by ID.
@@ -498,7 +500,7 @@ impl<T> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns `SignaledError` if the signals collection is already borrowed.
+    /// Returns `SignaledError` if the signals collection is already borrowed or if the provided `SignalId` does not match any `Signal`.
     ///
     /// # Notes
     ///
@@ -509,8 +511,10 @@ impl<T> Signaled<T> {
             .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_priority(priority);
+            return Ok(())
+        } else {
+            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
         }
-        Ok(())
     }
 
 }
