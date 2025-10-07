@@ -10,7 +10,7 @@
 //! - **Reactive Updates**: Update a value and automatically emit signals to registered callbacks.
 //! - **Priority-Based Signals**: Signals are executed in descending priority order.
 //! - **Conditional Triggers**: Signals can have trigger functions to control callback execution.
-//! - **One-Time Signals**: Signals can be flagged as `once` making them only be called once and then removed from the Signaled collection.
+//! - **One-Time Signals**: Signals can be flagged as `once` making them only be called once and then removed from the Signaled Signal collection.
 //! - **Safe Mutability**: Uses `RefCell` for interior mutability with runtime borrow checking.
 //! - **Error Handling**: Returns `Result` with `SignaledError` for borrow conflicts and invalid signal IDs.
 //!
@@ -182,7 +182,9 @@ pub struct Signal<T> {
     /// Number used in the Signaled struct to decide the order of execution of the signals.
     priority: Cell<u64>,
     /// Boolean representing if the signal should be removed from the Signaled after being called once.
-    once: Cell<bool>
+    once: Cell<bool>,
+    /// Boolean representing if the signal should not invoke the callback when emitted.
+    mute: Cell<bool>
 }
 
 impl<T> Signal<T> {
@@ -208,7 +210,8 @@ impl<T> Signal<T> {
             trigger: RefCell::new(Rc::new(|_, _| true)),
             id: new_signal_id(),
             priority: Cell::new(1),
-            once: Cell::new(false)
+            once: Cell::new(false),
+            mute: Cell::new(false)
         }
     }
 
@@ -234,6 +237,9 @@ impl<T> Signal<T> {
     /// signal.emit(&4, &10).unwrap(); // Prints "Old: 4, New: 10"
     /// ```
     pub fn emit(&self, old: &T, new: &T) -> Result<(), SignaledError>{
+        if self.mute.get() {
+            return Ok(())
+        }
         let trigger = self.trigger
             .try_borrow()
             .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::SignalTrigger }))?;
@@ -297,10 +303,15 @@ impl<T> Signal<T> {
         self.priority.set(priority);
     }
 
-    /// Sets the `once` flag of the signal to true.
+    /// Sets the `once` flag of the signal.
     pub fn set_once(&self, is_once: bool) {
         self.once.set(is_once);
     }
+
+    /// Sets the `mute` flag of the signal.
+    pub fn set_mute(&self, is_mute: bool) {
+        self.mute.set(is_mute);
+    } 
 }
 
 impl<T> Display for Signal<T> {
@@ -326,7 +337,8 @@ impl<T> Clone for Signal<T> {
             trigger: self.trigger.clone(),
             id: self.id.clone(),
             priority: self.priority.clone(),
-            once: Cell::new(false)
+            once: Cell::new(false),
+            mute: Cell::new(false)
         }
     }
 }
@@ -569,6 +581,28 @@ impl<T> Signaled<T> {
             .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_once(is_once);
+            return Ok(())
+        } else {
+            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+        }
+    }
+
+    /// Sets the `mute` flag for a signal by ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The ID of the signal.
+    /// * `is_mute` - Boolean that decides if the target signal should be muted or not.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SignaledError` if the signals collection is already borrowed or if the provided `SignalId` does not match any `Signal`.
+    pub fn set_signal_mute(&self, id: SignalId, is_mute: bool) -> Result<(), SignaledError> {
+        let signals = self.signals
+            .try_borrow()
+            .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
+        if let Some(signal) = signals.iter().find(|s| s.id == id) {
+            signal.set_mute(is_mute);
             return Ok(())
         } else {
             return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
@@ -855,5 +889,29 @@ mod tests {
         assert_eq!(signaled.signals.borrow().len(), 2); // Signal A and Signal B.
         signaled.set(6).unwrap(); // Signal B is dropped because it is `once`.
         assert_eq!(signaled.signals.borrow().len(), 1); // Signal A.
+    }
+
+    #[test]
+    fn test_mute_signal() {
+        let calls = Rc::new(Cell::new(0));
+        let signaled = Signaled::new(0);
+
+        let calls_clone = Rc::clone(&calls);
+        let signal: Signal<i32> = Signal::new(move |_, _| calls_clone.set(calls_clone.get() + 1));
+
+        let signal_id = signaled.add_signal(signal).unwrap();
+
+        signaled.set(6).unwrap(); // Calls = 1, Signal is unmuted.
+        assert_eq!(calls.get(), 1);
+
+        signaled.set_signal_mute(signal_id, true).unwrap(); // Signal muted so next Signaled `set` won't invoke its callback.
+
+        signaled.set(7).unwrap(); // Calls = 1, Signal is muted.
+        assert_eq!(calls.get(), 1);
+
+        signaled.set_signal_mute(signal_id, false).unwrap(); // Signal unmuted so next Signaled `set` will invoke its callback.
+
+        signaled.set(8).unwrap(); // Calls = 2, Signal is unmuted.
+        assert_eq!(calls.get(), 2);
     }
 }
