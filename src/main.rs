@@ -10,6 +10,7 @@
 //! - **Reactive Updates**: Update a value and automatically emit signals to registered callbacks.
 //! - **Priority-Based Signals**: Signals are executed in descending priority order.
 //! - **Conditional Triggers**: Signals can have trigger functions to control callback execution.
+//! - **One-Time Signals**: Signals can be flagged as `once` making them only be called once and then removed from the Signaled collection.
 //! - **Safe Mutability**: Uses `RefCell` for interior mutability with runtime borrow checking.
 //! - **Error Handling**: Returns `Result` with `SignaledError` for borrow conflicts and invalid signal IDs.
 //!
@@ -179,7 +180,9 @@ pub struct Signal<T> {
     /// Identifier for the signal.
     id: u64,
     /// Number used in the Signaled struct to decide the order of execution of the signals.
-    priority: Cell<u64>
+    priority: Cell<u64>,
+    /// Boolean representing if the signal should be removed from the Signaled after being called once.
+    once: Cell<bool>
 }
 
 impl<T> Signal<T> {
@@ -204,7 +207,8 @@ impl<T> Signal<T> {
             callback: RefCell::new(Rc::new(callback)),
             trigger: RefCell::new(Rc::new(|_, _| true)),
             id: new_signal_id(),
-            priority: Cell::new(1)
+            priority: Cell::new(1),
+            once: Cell::new(false)
         }
     }
 
@@ -292,6 +296,11 @@ impl<T> Signal<T> {
     pub fn set_priority(&self, priority: u64) {
         self.priority.set(priority);
     }
+
+    /// Sets the `once` flag of the signal to true.
+    pub fn set_once(&self, is_once: bool) {
+        self.once.set(is_once);
+    }
 }
 
 impl<T> Display for Signal<T> {
@@ -316,7 +325,8 @@ impl<T> Clone for Signal<T> {
             callback: self.callback.clone(),
             trigger: self.trigger.clone(),
             id: self.id.clone(),
-            priority: self.priority.clone()
+            priority: self.priority.clone(),
+            once: Cell::new(false)
         }
     }
 }
@@ -410,6 +420,7 @@ impl<T> Signaled<T> {
                 for signal in signals.iter() {
                     signal.emit(old, new)?
                 }
+                signals.retain(|s| !s.once.get());
                 Ok(())
             }
             Err(_) => Err(signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))
@@ -449,7 +460,7 @@ impl<T> Signaled<T> {
     /// # Errors
     ///
     /// Returns `SignaledError` if the signals collection is already borrowed or the ID is invalid.
-    pub fn remove_signal(&self, id: SignalId) -> Result<Signal<T>, SignaledError>{
+    pub fn remove_signal(&self, id: SignalId) -> Result<Signal<T>, SignaledError> {
         match self.signals.try_borrow_mut() {
             Ok(mut s) => {
                 let index = s
@@ -536,6 +547,28 @@ impl<T> Signaled<T> {
             .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_priority(priority);
+            return Ok(())
+        } else {
+            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+        }
+    }
+
+    /// Sets the `once` flag for a signal by ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The ID of the signal.
+    /// * `is_once` - Boolean that decides if the target signal should be `once` or not.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SignaledError` if the signals collection is already borrowed or if the provided `SignalId` does not match any `Signal`.
+    pub fn set_signal_once(&self, id: SignalId, is_once: bool) -> Result<(), SignaledError> {
+        let signals = self.signals
+            .try_borrow()
+            .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
+        if let Some(signal) = signals.iter().find(|s| s.id == id) {
+            signal.set_once(is_once);
             return Ok(())
         } else {
             return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
@@ -807,5 +840,20 @@ mod tests {
             signaled.set_signal_callback(invalid_id, |_, _| {}),
             Err(SignaledError { message }) if message == format!("Signal ID '{}' does not match any Signal", invalid_id))
         );
+    }
+
+    #[test]
+    fn test_once_signal() {
+        let signaled = Signaled::new(5);
+        let signal_a: Signal<i32> = Signal::new(|_, _| {});
+        let signal_b: Signal<i32> = Signal::new(|_, _| {});
+        signal_b.set_once(true);
+        
+        signaled.add_signal(signal_a).unwrap();
+        signaled.add_signal(signal_b).unwrap();
+
+        assert_eq!(signaled.signals.borrow().len(), 2); // Signal A and Signal B.
+        signaled.set(6).unwrap(); // Signal B is dropped because it is `once`.
+        assert_eq!(signaled.signals.borrow().len(), 1); // Signal A.
     }
 }
