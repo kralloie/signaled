@@ -37,7 +37,7 @@ Basic usage to create a `Signaled<i32>`, add a signal, and emit changes:
 use signaled::{Signaled, Signal, SignaledError};
 
 let signaled = Signaled::new(0);
-let signal = Signal::new(|old: &i32, new: &i32| println!("Old: {} | New: {}", old, new));
+let signal = signal!(|old: &i32, new: &i32| println!("Old: {} | New: {}", old, new));
 signaled.add_signal(signal).unwrap();
 signaled.set(42).unwrap(); // Prints "Old: 0 | New: 42"
 ```
@@ -48,9 +48,9 @@ Using priorities and triggers:
 use signaled::{Signaled, Signal, SignaledError};
 
 let signaled = Signaled::new(0);
-let high_priority = Signal::new(|old: &i32, new: &i32| println!("High: Old: {}, New: {}", old, new));
+let high_priority = signal!(|old: &i32, new: &i32| println!("High: Old: {}, New: {}", old, new));
 high_priority.set_priority(10);
-let conditional = Signal::new(|old: &i32, new: &i32| println!("Conditional: Old: {}, New: {}", old, new));
+let conditional = signal!(|old: &i32, new: &i32| println!("Conditional: Old: {}, New: {}", old, new));
 conditional.set_trigger(|old: &i32, new: &i32| *new > *old + 5).unwrap();
 signaled.add_signal(high_priority).unwrap();
 signaled.add_signal(conditional).unwrap();
