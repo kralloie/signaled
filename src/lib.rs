@@ -17,7 +17,6 @@
 //! ## Limitations
 //!
 //! - Single-threaded due to use of `Rc` and `RefCell`. For multi-threaded use, consider wrapping in `Arc<Mutex<_>>`.
-//! - Cloning a `Signaled<T>` or `Signal<T>` may panic if the underlying `RefCell` is borrowed.
 //! - Recursive calls to `set` or `emit` in signal callbacks may cause borrow errors.
 //! - Re-entrant calls (e.g. calling `set` from within the callback of a `Signal<T>`) may panic due borrow errors.
 //!
@@ -53,7 +52,7 @@
 //! ## Error Handling
 //!
 //! Methods like `set`, `emit`, and `remove_signal` return `Result` with `SignaledError` for:
-//! - `BorrowError`: Attempted to immutably borrow a value already borrowed.
+//! - `BorrowError`: Attempted to immutably borrow a value already mutably borrowed.
 //! - `BorrowMutError`: Attempted to mutably borrow a value already borrowed.
 //! - `InvalidSignalId`: Provided a `Signal` ID that does not exist.
 //!
@@ -84,16 +83,16 @@ pub enum ErrorSource {
     Value,
     /// Error related to the [`Signal`] vector of [`Signaled`].
     Signals,
-    /// Error related to a [`Signal`]'s callback.
+    /// Error related to a [`Signal`]'s `callback`.
     SignalCallback,
-    /// Error related to a [`Signal`]'s trigger.
+    /// Error related to a [`Signal`]'s `trigger`.
     SignalTrigger
 }
 
 /// Type of error when manipulating [`Signaled`] or [`Signal`] structs. 
 #[derive(Debug)] 
 pub enum ErrorType {
-    /// Attempted to immutably borrow a [`RefCell`] wrapped field that is already borrowed.
+    /// Attempted to immutably borrow a [`RefCell`] wrapped field that is already mutably borrowed.
     BorrowError { source: ErrorSource },
     /// Attempted to mutably borrow a [`RefCell`] wrapped field that is already borrowed.
     BorrowMutError { source: ErrorSource },
@@ -103,7 +102,7 @@ pub enum ErrorType {
 
 /// Error type returned by [`Signaled`] and [`Signal`] functions.
 /// 
-/// Contains a descriptive message indicating the source and type of the error, such as borrow conflicts or invalid [`Signal`] IDs.
+/// Contains a descriptive message indicating the source and type of the error, such as borrow conflicts or invalid [`Signal`] `id`.
 #[derive(Debug)]
 pub struct SignaledError {
     /// Descriptive error message.
@@ -119,10 +118,10 @@ pub fn signaled_error(err_type: ErrorType) -> SignaledError {
     let err_msg = match err_type {
         ErrorType::BorrowError { source } => {
             match source {
-                ErrorSource::SignalCallback => "Cannot borrow Signal callback, it is already borrowed".to_string(),
-                ErrorSource::SignalTrigger => "Cannot borrow Signal trigger, it is already borrowed".to_string(),
-                ErrorSource::Value => "Cannot borrow Signaled value, it is already borrowed".to_string(),
-                ErrorSource::Signals => "Cannot borrow Signaled signals, they are already borrowed".to_string()
+                ErrorSource::SignalCallback => "Cannot borrow Signal callback, it is already mutably borrowed".to_string(),
+                ErrorSource::SignalTrigger => "Cannot borrow Signal trigger, it is already mutably borrowed".to_string(),
+                ErrorSource::Value => "Cannot borrow Signaled value, it is already mutably borrowed".to_string(),
+                ErrorSource::Signals => "Cannot borrow Signaled signals, they are already mutably borrowed".to_string()
             }
         }
         ErrorType::BorrowMutError { source } => {
@@ -145,13 +144,11 @@ type SignalId = u64;
 
 static SIGNAL_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Generates a new [`SignalId`] for a [`Signal`] using the global ID counter
-/// 
-/// When a [`Signal`] is cloned the ID is reutilized for easier identification since `callback` and `trigger` cannot be visualized.
+/// Generates a new [`SignalId`] for a [`Signal`] using the global identifier counter
 /// 
 /// # Panics 
 /// 
-/// Panics in debug builds if the ID counter overflows (`u64::MAX`).
+/// Panics in debug builds if the identifier counter overflows (`u64::MAX`).
 pub fn new_signal_id() -> SignalId {
     let id = SIGNAL_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     debug_assert!(id != u64::MAX, "SignalId counter overflow");
@@ -159,7 +156,7 @@ pub fn new_signal_id() -> SignalId {
 }
 /// A signal that executes a callback when a [`Signaled`] value changes, if its trigger condition is met.
 ///
-/// Signals have a unique ID, a priority for ordering execution, and a trigger function to
+/// Signals have a unique `id`, a priority for ordering execution, and a trigger function to
 /// conditionally execute the callback.
 ///
 /// # Examples
@@ -188,11 +185,15 @@ pub struct Signal<T> {
 }
 
 impl<T> Signal<T> {
-    /// Creates a new [`Signal`] with the given callback, default trigger (always `true`), and priority 1.
+    /// Creates a new [`Signal`] instance.
     ///
     /// # Arguments
     ///
-    /// * `callback` - The function to execute when the signal is emitted.
+    /// * `callback` - Function to execute when the signal is emitted.
+    /// * `trigger` -  Function that returns a boolean representing if the `callback` will be invoked or not.
+    /// * `priority` - Number representing the priority in which the [`Signal`] will be emitted from the parent [`Signaled`].
+    /// * `once` - Boolean representing if the [`Signal`] will be removed from the parent [`Signaled`] `signals` after being emitted once.
+    /// * `mute` - Boolean representing if the `callback` will be invoked or not.
     ///
     /// # Examples
     ///
@@ -224,7 +225,7 @@ impl<T> Signal<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the callback or trigger is already borrowed.
+    /// Returns [`SignaledError`] if the callback or trigger are already borrowed.
     ///
     /// # Examples
     ///
@@ -294,7 +295,7 @@ impl<T> Signal<T> {
 
     /// Sets the execution priority of the [`Signal`].
     /// 
-    /// Default priority is 1.
+    /// Default priority is 0.
     /// 
     /// # Arguments
     /// 
@@ -321,11 +322,13 @@ impl<T> Display for Signal<T> {
 }
 
 impl<T> Clone for Signal<T> {
-    /// Creates a clone of the [`Signal`], retaining the same ID.
+    /// Creates a clone of the [`Signal`], retaining the same `id`.
+    /// 
+    /// When a [`Signal`] is cloned the `id` is reutilized for easier identification since `callback` and `trigger` cannot be visualized.
     /// 
     /// # Panics
     /// 
-    /// Panics if the callback or trigger is already borrowed.
+    /// Panics if the callback or trigger are already mutably borrowed.
     /// 
     /// # Notes
     /// 
@@ -455,7 +458,7 @@ impl<T> Signaled<T> {
     ///
     /// let signaled = Signaled::new(0);
     /// signaled.add_signal(signal!(|old, new| println!("Old: {} | New: {}", old, new)));
-    /// signaled.set(1); /// Prints "Old: 0 | New: 1"
+    /// signaled.set(1).unwrap(); /// Prints "Old: 0 | New: 1"
     /// ```
     pub fn set(&self, new_value: T) -> Result<(), SignaledError> {
         let old_value = std::mem::replace(
@@ -468,11 +471,11 @@ impl<T> Signaled<T> {
         self.emit_signals(&old_value, &new_value_ref)
     }
 
-    /// Returns a reference to the current value or an error if `val` is currently borrowed.
+    /// Returns a reference to the current value or an error if `val` is currently mutably borrowed.
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if `val` is already borrowed.
+    /// Returns [`SignaledError`] if `val` is mutably borrowed.
     pub fn get_ref(&self) -> Result<Ref<'_, T>, SignaledError> {
         match self.val.try_borrow() {
             Ok(r) => Ok(r),
@@ -501,7 +504,7 @@ impl<T> Signaled<T> {
 
     /// Adds a signal to the collection, returning its [`SignalId`].
     /// 
-    /// If a [`Signal`] with the same ID is already in the collection, returns the existing ID without adding the [`Signal`] to the collection.
+    /// If a [`Signal`] with the same `id` is already in the collection, returns the existing `id` without adding the [`Signal`] to the collection.
     /// 
     /// # Arguments
     /// * `signal` - The [`Signal`] to add.
@@ -523,15 +526,15 @@ impl<T> Signaled<T> {
         }
     }
 
-    /// Removes a [`Signal`] by ID, returning the removed [`Signal`].
+    /// Removes a [`Signal`] by `id`, returning the removed [`Signal`].
     ///
     /// # Arguments
     ///
-    /// * `id` - The ID of the [`Signal`] to remove.
+    /// * `id` - The `id` of the [`Signal`] to remove.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection is already borrowed or the ID is invalid.
+    /// Returns [`SignaledError`] if the [`Signal`] collection is already borrowed or the `id` is invalid.
     pub fn remove_signal(&self, id: SignalId) -> Result<Signal<T>, SignaledError> {
         match self.signals.try_borrow_mut() {
             Ok(mut s) => {
@@ -545,16 +548,16 @@ impl<T> Signaled<T> {
         }
     }
  
-    /// Sets the callback for a [`Signal`] by ID.
+    /// Sets the callback for a [`Signal`] by `id`.
     ///
     /// # Arguments
     ///
-    /// * `id` - The ID of the [`Signal`].
+    /// * `id` - The `id` of the [`Signal`].
     /// * `callback` - The new callback function.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] callback is already borrowed or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] callback are already borrowed or if the provided [`SignalId`] does not match any [`Signal`].
     pub fn set_signal_callback<F: Fn(&T, &T) + 'static>(&self, id: SignalId, callback: F) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
@@ -566,16 +569,16 @@ impl<T> Signaled<T> {
         }
     }
 
-    /// Sets the trigger condition for a [`Signal`] by ID.
+    /// Sets the trigger condition for a [`Signal`] by `id`.
     ///
     /// # Arguments
     ///
-    /// * `id` - The ID of the [`Signal`].
+    /// * `id` - The `id` of the [`Signal`].
     /// * `trigger` - The new trigger function.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] trigger is already borrowed or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] trigger are already borrowed or if the provided [`SignalId`] does not match any [`Signal`].
     pub fn set_signal_trigger<F: Fn(&T, &T) -> bool + 'static>(&self, id: SignalId, trigger: F) -> Result<(), SignaledError> {
         let signals = self.signals.try_borrow().map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
@@ -585,15 +588,15 @@ impl<T> Signaled<T> {
         }
     }
 
-    /// Removes the trigger condition for a [`Signal`] by ID.
+    /// Removes the trigger condition for a [`Signal`] by `id`.
     /// 
     /// # Arguments
     /// 
-    /// * `id` - The ID of the [`Signal`].
+    /// * `id` - The `id` of the [`Signal`].
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] trigger is already borrowed or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] trigger are already borrowed or if the provided [`SignalId`] does not match any [`Signal`].
     pub fn remove_signal_trigger(&self, id: SignalId) -> Result<(), SignaledError> {
         let signals = self.signals.try_borrow().map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
@@ -603,16 +606,16 @@ impl<T> Signaled<T> {
         }
     }
 
-    /// Sets the priority for a [`Signal`] by ID.
+    /// Sets the priority for a [`Signal`] by `id`.
     ///
     /// # Arguments
     ///
-    /// * `id` - The ID of the [`Signal`].
+    /// * `id` - The `id` of the [`Signal`].
     /// * `priority` - The new priority value (higher executes first).
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection is already borrowed or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError`] if the [`Signal`] collection is already mutably borrowed or if the provided [`SignalId`] does not match any [`Signal`].
     pub fn set_signal_priority(&self, id: SignalId, priority: u64) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
@@ -625,16 +628,16 @@ impl<T> Signaled<T> {
         }
     }
 
-    /// Sets the `once` flag for a [`Signal`] by ID.
+    /// Sets the `once` flag for a [`Signal`] by `id`.
     ///
     /// # Arguments
     ///
-    /// * `id` - The ID of the [`Signal`].
+    /// * `id` - The `id` of the [`Signal`].
     /// * `is_once` - Boolean that decides if the target [`Signal`] should be `once` or not.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection is already borrowed or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError`] if the [`Signal`] collection is already mutably borrowed or if the provided [`SignalId`] does not match any [`Signal`].
     pub fn set_signal_once(&self, id: SignalId, is_once: bool) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
@@ -647,16 +650,16 @@ impl<T> Signaled<T> {
         }
     }
 
-    /// Sets the `mute` flag for a [Signal] by ID.
+    /// Sets the `mute` flag for a [`Signal`] by `id`.
     ///
     /// # Arguments
     ///
-    /// * `id` - The ID of the [`Signal`].
+    /// * `id` - The `id` of the [`Signal`].
     /// * `is_mute` - Boolean that decides if the target [`Signal`] should be muted or not.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection is already borrowed or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError`] if the [`Signal`] collection is already mutably borrowed or if the provided [`SignalId`] does not match any [`Signal`].
     pub fn set_signal_mute(&self, id: SignalId, is_mute: bool) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
@@ -689,7 +692,16 @@ impl<T: Display> Display for Signaled<T> {
 }
 
 impl<T: Clone> Clone for Signaled<T> {
-    /// Creates a deep copy of the [`Signaled`], cloning `val` and `signals`.
+    /// Clones the [`Signaled`] instance.
+    /// 
+    /// The contained value `val` is deep-cloned.
+    /// 
+    /// The list of signals is also cloned, but individual [`Signal`]s will initially share their underlying callback and trigger functions with the original. 
+    /// 
+    /// See [`Signal::clone`] for more details.
+    /// 
+    /// Because they also share the same `id`, only one clone of a particular signal can be added to a [`Signaled`] `signals` collection.
+    /// However it is possible to create 2 identical [`Signal`]s by repeating the same creating process with [`Signal::new`] or the [`signal!`] macro.
     ///
     /// # Panics
     ///
@@ -704,11 +716,11 @@ impl<T: Clone> Clone for Signaled<T> {
 }
 
 impl<T: Clone> Signaled<T> {
-    /// Returns a cloned copy of the current value.
+    /// Returns a cloned copy of the current value or an error if `val` is currently mutably borrowed.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if `val` is already borrowed.
+    /// Returns [`SignaledError`] if `val` is already mutably borrowed.
     pub fn get(&self) -> Result<T, SignaledError> {
         match self.val.try_borrow() {
             Ok(r) => Ok(r.clone()),
@@ -716,7 +728,7 @@ impl<T: Clone> Signaled<T> {
         }
     }
 
-    /// Creates a deep copy of the [`Signaled`], cloning `val` and `signals`.
+    /// Creates a copy of the [`Signaled`], cloning `val` and `signals`.
     ///
     /// # Errors
     ///

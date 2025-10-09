@@ -25,7 +25,6 @@ making it ideal for reactive UI updates, event handling, or state management.
 ## Limitations
 
 - Single-threaded due to use of `Rc` and `RefCell`. For multi-threaded use, consider wrapping in `Arc<Mutex<_>>`.
-- Cloning a `Signaled<T>` or `Signal<T>` may panic if the underlying `RefCell` is borrowed.
 - Recursive calls to `set` or `emit` in signal callbacks may cause borrow errors.
 - Re-entrant calls (e.g. calling `set` from within the callback of a `Signal<T>`) may panic due borrow errors.
 
@@ -34,7 +33,7 @@ making it ideal for reactive UI updates, event handling, or state management.
 Basic usage to create a `Signaled<i32>`, add a signal, and emit changes:
 
 ```rust
-use signaled::{Signaled, Signal, SignaledError};
+use signaled::{Signaled, Signal, SignaledError, signal};
 
 let signaled = Signaled::new(0);
 let signal = signal!(|old: &i32, new: &i32| println!("Old: {} | New: {}", old, new));
@@ -45,7 +44,7 @@ signaled.set(42).unwrap(); // Prints "Old: 0 | New: 42"
 Using priorities and triggers:
 
 ```rust
-use signaled::{Signaled, Signal, SignaledError};
+use signaled::{Signaled, Signal, SignaledError, signal};
 
 let signaled = Signaled::new(0);
 let high_priority = signal!(|old: &i32, new: &i32| println!("High: Old: {}, New: {}", old, new));
@@ -61,7 +60,7 @@ signaled.set(3).unwrap(); // Prints only "High: Old: 10, New: 3"
 ## Error Handling
 
 Methods like `set`, `emit`, and `remove_signal` return `Result` with `SignaledError` for:
-- `BorrowError`: Attempted to immutably borrow a value already borrowed.
+- `BorrowError`: Attempted to immutably borrow a value already mutably borrowed.
 - `BorrowMutError`: Attempted to mutably borrow a value already borrowed.
 - `InvalidSignalId`: Provided a signal ID that does not exist.
 
