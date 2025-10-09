@@ -1,6 +1,8 @@
 <div align="center">
 
-# Signaled 📡
+<img src="https://github.com/kralloie/signaled/blob/main/assets/signaled.svg" width="200">
+
+# Signaled
 
 <img src="https://github.com/kralloie/signaled/actions/workflows/tests.yml/badge.svg" alt="test">
 <img src="https://github.com/kralloie/signaled/actions/workflows/docs.yml/badge.svg" alt="docs">
