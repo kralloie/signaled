@@ -2,8 +2,8 @@
 
 # Signaled 📡
 
-<img src="https://github.com/kralloie/signaled/actions/workflows/tests.yml/badge.svg" alt="Tests">
-<img src="https://github.com/kralloie/signaled/actions/workflows/docs.yml/badge.svg" alt="Docs">
+<img src="https://github.com/kralloie/signaled/actions/workflows/tests.yml/badge.svg" alt="test">
+<img src="https://github.com/kralloie/signaled/actions/workflows/docs.yml/badge.svg" alt="docs">
 <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
 </div>
 <br>
