@@ -984,4 +984,26 @@ mod tests {
         signaled.set(8).unwrap(); // Calls = 2, Signal is unmuted.
         assert_eq!(calls.get(), 2);
     }
+
+    #[test]
+    fn test_get_ref() {
+        let signaled = Signaled::new(0);
+        assert_eq!(*signaled.get_ref().unwrap(), 0);
+
+        for i in 0..10 {
+            signaled.set(i).unwrap();
+            assert_eq!(*signaled.get_ref().unwrap(), i);
+        }
+    }
+
+    #[test]
+    fn test_get() {
+        let signaled = Signaled::new(0);
+        assert_eq!(signaled.get().unwrap(), 0);
+
+        for i in 0..10 {
+            signaled.set(i).unwrap();
+            assert_eq!(signaled.get().unwrap(), i);
+        }
+    }
 }
