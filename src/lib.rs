@@ -13,10 +13,10 @@
 //! - **One-Time Signals**: Signals can be flagged as `once` making them only be called once and then removed from the Signaled Signal collection.
 //! - **Safe Mutability**: Uses `RefCell` for interior mutability with runtime borrow checking.
 //! - **Error Handling**: Returns `Result` with `SignaledError` for borrow conflicts and invalid signal IDs.
+//! - **Multi-threading**: `signaled::sync` module with thread-safe versions of `Signaled` and `Signal`.
 //!
 //! ## Limitations
 //!
-//! - Single-threaded due to use of `Rc` and `RefCell`. For multi-threaded use, consider wrapping in `Arc<Mutex<_>>`.
 //! - Recursive calls to `set` or `emit` in signal callbacks may cause borrow errors.
 //! - Re-entrant calls (e.g. calling `set` from within the callback of a `Signal<T>`) may panic due borrow errors.
 //!
@@ -73,6 +73,8 @@ use std::cell::{Cell, Ref, RefCell};
 use std::rc::Rc;
 use std::fmt::{Display};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+pub mod sync;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -471,7 +473,7 @@ impl<T> Signaled<T> {
         self.emit_signals(&old_value, &new_value_ref)
     }
 
-    /// Returns a reference to the current value or an error if `val` is currently mutably borrowed.
+    /// Returns a reference to the current value.
     /// 
     /// # Errors
     /// 

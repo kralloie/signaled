@@ -23,10 +23,10 @@ making it ideal for reactive UI updates, event handling, or state management.
 - **One-Time Signals**: Signals can be flagged as `once` making them only be called once and then removed from the Signaled Signal collection.
 - **Safe Mutability**: Uses `RefCell` for interior mutability with runtime borrow checking.
 - **Error Handling**: Returns `Result` with `SignaledError` for borrow conflicts and invalid signal IDs.
+- **Multi-threading**: `signaled::sync` inner module with thread-safe versions of `Signaled` and `Signal`.
 
 ## Limitations
 
-- Single-threaded due to use of `Rc` and `RefCell`. For multi-threaded use, consider wrapping in `Arc<Mutex<_>>`.
 - Recursive calls to `set` or `emit` in signal callbacks may cause borrow errors.
 - Re-entrant calls (e.g. calling `set` from within the callback of a `Signal<T>`) may panic due borrow errors.
 
@@ -64,7 +64,7 @@ signaled.set(3).unwrap(); // Prints only "High: Old: 10, New: 3"
 Methods like `set`, `emit`, and `remove_signal` return `Result` with `SignaledError` for:
 - `BorrowError`: Attempted to immutably borrow a value already mutably borrowed.
 - `BorrowMutError`: Attempted to mutably borrow a value already borrowed.
-- `InvalidSignalId`: Provided a signal ID that does not exist.
+- `InvalidSignalId`: Provided a `Signal` ID that does not exist.
 
 ```rust
 use signaled::{Signaled, SignaledError, ErrorType, ErrorSource};
