@@ -13,7 +13,7 @@
 //! - **One-Time Signals**: Signals can be flagged as `once` making them only be called once and then removed from the Signaled Signal collection.
 //! - **Safe Mutability**: Uses `RefCell` for interior mutability with runtime borrow checking.
 //! - **Error Handling**: Returns `Result` with `SignaledError` for borrow conflicts and invalid signal IDs.
-//! - **Multi-threading**: `signaled::sync` module with thread-safe versions of `Signaled` and `Signal`.
+//! - **Multi-threading**: `signaled::sync` inner module with thread-safe versions of `Signaled` and `Signal`.
 //!
 //! ## Limitations
 //!
