@@ -578,14 +578,11 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// For a non-blocking alternative, see [`try_set`].
     pub fn set(&self, new_value: T) -> Result<(), SignaledError> {
-        let old_value = std::mem::replace(
-            &mut *self.val
-                    .write()
-                    .map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }))?,
-            new_value
-        );
-        let new_value_ref = self.val.read().map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }))?;
-        self.emit_signals(&old_value, &new_value_ref)
+        let mut guard = self.val
+            .write()
+            .map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }))?;
+        let old_value = std::mem::replace(&mut *guard, new_value);
+        self.emit_signals(&old_value, &*guard)
     }
 
     /// Sets a new value for `val` and emits all [`Signal`]s.
@@ -610,24 +607,16 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// signaled.try_set(1).unwrap(); /// Prints "Old: 0 | New: 1"
     /// ```
     pub fn try_set(&self, new_value: T) -> Result<(), SignaledError> {
-        let old_value = std::mem::replace(
-            &mut *self.val
-                    .try_write()
-                    .map_err(|e| {
-                        match e {
-                            TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }),
-                            TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::Value })
-                        }
-                    })?,
-            new_value
-        );
-        let new_value_ref = self.val.try_read().map_err(|e| {
-            match e {
-                TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }),
-                TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::Value })
-            }
-        })?;
-        self.try_emit_signals(&old_value, &new_value_ref)
+        let mut guard = self.val
+            .try_write()
+            .map_err(|e| {
+                match e {
+                    TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }),
+                    TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::Value })
+                }
+            })?;
+        let old_value = std::mem::replace(&mut *guard, new_value);
+        self.try_emit_signals(&old_value, &*guard)
     }
 
     /// Returns the lock of the current value.
@@ -1364,6 +1353,16 @@ mod tests {
     }
 
     #[test]
+    fn test_old_new() {
+        let signaled = Signaled::new(0);
+        signaled.add_signal(signal_sync!(|old, new| assert!(*new == *old + 1))).unwrap();
+        
+        for i in 1..10 {
+            signaled.set(i).unwrap();
+        }
+    }
+
+    #[test]
     fn test_try_get_lock() {
         let signaled = Signaled::new(0);
         assert_eq!(*signaled.try_get_lock().unwrap(), 0);
@@ -1382,6 +1381,25 @@ mod tests {
             signaled.set(i).unwrap();
             assert_eq!(signaled.try_get().unwrap(), i)
         }
+    }
+
+    #[test]
+    fn test_try_set() {
+        let calls = Arc::new(Mutex::new(0));
+        let signaled = Signaled::new(0);
+
+        let calls_clone = Arc::clone(&calls);
+        signaled.add_signal(signal_sync!(move |_, _| {
+            let mut lock = calls_clone.lock().unwrap();
+            *lock = *lock + 1;
+        })).unwrap();
+
+        for i in 0..10 {
+            signaled.try_set(i).unwrap();
+            assert_eq!(signaled.get().unwrap(), i);
+        }
+
+        assert_eq!(*calls.lock().unwrap(), 10);
     }
 
     #[test]
@@ -1404,8 +1422,9 @@ mod tests {
             let handle = std::thread::spawn(move || {
                 let calls = calls_clone;
                 let current_call_count = *calls.lock().unwrap();
+                let lock = signaled_clone.lock().unwrap();
                 for _ in 0..5 {
-                    signaled_clone.lock().unwrap().set(()).unwrap();
+                    lock.set(()).unwrap();
                 }
                 assert_eq!(*calls.lock().unwrap(), current_call_count + 5); // Assert that the call count increased only 5 to ensure no other thread increased the count.
             });
@@ -1451,29 +1470,104 @@ mod tests {
     }
 
     #[test] 
-    fn test_deadlock_free() {
+    fn test_try_set_would_block_error() {
         let signaled = Signaled::new(0);
-        let _lock = signaled.get_lock().unwrap();
-        assert!(signaled.try_set(1).is_err()); 
-        // `try_set` returns a `SignaledError` because we are trying to get the `val` lock while `_lock` is holding it, using `set` in this case would result in a deadlock.
+        let _read_lock = signaled.get_lock().unwrap();
+        assert!(signaled.try_set(1).is_err_and(|e| e.message == "Cannot access Signaled value: lock is already held elsewhere"));
     }
 
     #[test]
-    fn test_try_set() {
-        let calls = Arc::new(Mutex::new(0));
+    fn test_try_get_would_block_error() {
         let signaled = Signaled::new(0);
+        let _write_lock = signaled.val.write().unwrap();
+        assert!(signaled.try_get().is_err_and(|e| e.message == "Cannot access Signaled value: lock is already held elsewhere"));
+    }
 
-        let calls_clone = Arc::clone(&calls);
-        signaled.add_signal(signal_sync!(move |_, _| {
-            let mut lock = calls_clone.lock().unwrap();
-            *lock = *lock + 1;
-        })).unwrap();
+    #[test]
+    fn test_try_get_lock_would_block_error() {
+        let signaled = Signaled::new(0);
+        let _write_lock = signaled.val.write().unwrap();
+        assert!(signaled.try_get_lock().is_err_and(|e| e.message == "Cannot access Signaled value: lock is already held elsewhere"));
+    }
 
-        for i in 0..10 {
-            signaled.try_set(i).unwrap();
-            assert_eq!(signaled.get().unwrap(), i);
+    #[test]
+    fn test_try_emit_signals_would_block_error() {
+        let signaled = Signaled::new(0);
+        signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let _lock = signaled.signals.lock().unwrap();
+        assert!(signaled.try_emit_signals(&1, &2).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is already held elsewhere"));
+    }
+
+    #[test]
+    fn test_try_add_signal_would_block_error() {
+        let signaled = Signaled::new(0);
+        let _lock = signaled.signals.lock().unwrap();
+        assert!(signaled.try_add_signal(signal_sync!(|_, _| {})).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is already held elsewhere"));
+    }
+
+    #[test]
+    fn test_try_remove_signal_would_block_error() {
+        let signaled = Signaled::new(0);
+        let signal_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let _lock = signaled.signals.lock().unwrap();
+        assert!(signaled.try_remove_signal(signal_id).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is already held elsewhere"));
+    }
+
+    #[test]
+    fn test_try_set_signal_callback_would_block_error() {
+        let signaled = Signaled::new(0);
+        let signal_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let _lock = signaled.signals.lock().unwrap();
+        assert!(signaled.try_set_signal_callback(signal_id, |_, _| {}).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is already held elsewhere"));
+    }
+
+    #[test]
+    fn test_try_set_signal_trigger_would_block_error() {
+        let signaled = Signaled::new(0);
+        let signal_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let _lock = signaled.signals.lock().unwrap();
+        assert!(signaled.try_set_signal_trigger(signal_id, |_, _| true).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is already held elsewhere"));
+    }
+    
+    #[test]
+    fn test_try_remove_signal_trigger_would_block_error() {
+        let signaled = Signaled::new(0);
+        let signal_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let _lock = signaled.signals.lock().unwrap();
+        assert!(signaled.try_remove_signal_trigger(signal_id).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is already held elsewhere"));
+    }
+
+    #[test]
+    fn test_try_emit_would_block_error() {
+        {
+            let signal: Signal<i32> = signal_sync!(|_, _| {});
+            let _lock = signal.trigger.lock().unwrap();
+            assert!(signal.try_emit(&1, &2).is_err_and(|e| e.message == "Cannot access Signal trigger: lock is already held elsewhere"));
         }
+        {
+            let signal: Signal<i32> = signal_sync!(|_, _| {});
+            let _lock = signal.callback.lock().unwrap();
+            assert!(signal.try_emit(&1, &2).is_err_and(|e| e.message == "Cannot access Signal callback: lock is already held elsewhere"));
+        }
+    }
 
-        assert_eq!(*calls.lock().unwrap(), 10);
+    #[test]
+    fn test_try_set_callback_would_block_error() {
+        let signal: Signal<i32> = signal_sync!(|_, _| {});
+        let _lock = signal.callback.lock().unwrap();
+        assert!(signal.try_set_callback(|_, _| {}).is_err_and(|e| e.message == "Cannot access Signal callback: lock is already held elsewhere"));
+    }
+
+    #[test]
+    fn test_try_set_trigger_would_block_error() {
+        let signal: Signal<i32> = signal_sync!(|_, _| {});
+        let _lock = signal.trigger.lock().unwrap();
+        assert!(signal.try_set_trigger(|_, _| true).is_err_and(|e| e.message == "Cannot access Signal trigger: lock is already held elsewhere"));
+    }
+
+    fn test_try_remove_trigger_would_block_error() {
+        let signal: Signal<i32> = signal_sync!(|_, _| {});
+        let _lock = signal.trigger.lock().unwrap();
+        assert!(signal.try_remove_trigger().is_err_and(|e| e.message == "Cannot access Signal trigger: lock is already held elsewhere"));
     }
 }
