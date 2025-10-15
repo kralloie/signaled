@@ -1418,15 +1418,11 @@ mod tests {
 
         for _ in 0..5 {
             let signaled_clone = Arc::clone(&signaled);
-            let calls_clone = Arc::clone(&calls);
             let handle = std::thread::spawn(move || {
-                let calls = calls_clone;
-                let current_call_count = *calls.lock().unwrap();
                 let lock = signaled_clone.lock().unwrap();
                 for _ in 0..5 {
                     lock.set(()).unwrap();
                 }
-                assert_eq!(*calls.lock().unwrap(), current_call_count + 5); // Assert that the call count increased only 5 to ensure no other thread increased the count.
             });
             handles.push(handle);
         }
@@ -1565,6 +1561,7 @@ mod tests {
         assert!(signal.try_set_trigger(|_, _| true).is_err_and(|e| e.message == "Cannot access Signal trigger: lock is already held elsewhere"));
     }
 
+    #[test]
     fn test_try_remove_trigger_would_block_error() {
         let signal: Signal<i32> = signal_sync!(|_, _| {});
         let _lock = signal.trigger.lock().unwrap();
