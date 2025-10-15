@@ -1354,11 +1354,21 @@ mod tests {
 
     #[test]
     fn test_old_new() {
-        let signaled = Signaled::new(0);
-        signaled.add_signal(signal_sync!(|old, new| assert!(*new == *old + 1))).unwrap();
-        
-        for i in 1..10 {
-            signaled.set(i).unwrap();
+        {
+            let signaled = Signaled::new(0);
+            signaled.add_signal(signal_sync!(|old, new| assert!(*new == *old + 1))).unwrap();
+            
+            for i in 1..10 {
+                signaled.set(i).unwrap();
+            }
+        }
+        {
+            let signaled = Signaled::new(0);
+            signaled.add_signal(signal_sync!(|old, new| assert!(*new == *old + 1))).unwrap();
+            
+            for i in 1..10 {
+                signaled.try_set(i).unwrap();
+            }
         }
     }
 
