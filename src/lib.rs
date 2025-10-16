@@ -1075,13 +1075,72 @@ mod tests {
         assert!(signal.remove_trigger().is_err_and(|e| e.message == "Cannot mutably borrow Signal trigger, it is already borrowed"));
     }
 
-    #[test]
-    fn test_invalid_signal_id_error() {
+    fn create_signaled_with_invalid_id() -> (Signaled<i32>, SignalId) {
         let signaled = Signaled::new(0);
         let signal_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
         let invalid_id = signal_id + 1;
+        (signaled, invalid_id)
+    }
+
+    #[test]
+    fn test_remove_signal_invalid_signal_id_error() {
+        let (signaled, invalid_id) = create_signaled_with_invalid_id();
+        assert!(matches!(
+            signaled.remove_signal(invalid_id),
+            Err(SignaledError { message }) if message == format!("Signal ID '{}' does not match any Signal", invalid_id))
+        );
+    }
+
+    #[test]
+    fn test_set_signal_callback_invalid_signal_id_error() {
+        let (signaled, invalid_id) = create_signaled_with_invalid_id();
         assert!(matches!(
             signaled.set_signal_callback(invalid_id, |_, _| {}),
+            Err(SignaledError { message }) if message == format!("Signal ID '{}' does not match any Signal", invalid_id))
+        );
+    }
+
+    #[test]
+    fn test_set_signal_trigger_invalid_signal_id_error() {
+        let (signaled, invalid_id) = create_signaled_with_invalid_id();
+        assert!(matches!(
+            signaled.set_signal_trigger(invalid_id, |_, _| true),
+            Err(SignaledError { message }) if message == format!("Signal ID '{}' does not match any Signal", invalid_id))
+        );
+    }
+
+    #[test]
+    fn test_remove_signal_trigger_invalid_signal_id_error() {
+        let (signaled, invalid_id) = create_signaled_with_invalid_id();
+        assert!(matches!(
+            signaled.remove_signal_trigger(invalid_id),
+            Err(SignaledError { message }) if message == format!("Signal ID '{}' does not match any Signal", invalid_id))
+        );
+    }
+
+    #[test]
+    fn test_set_signal_priority_invalid_signal_id_error() {
+        let (signaled, invalid_id) = create_signaled_with_invalid_id();
+        assert!(matches!(
+            signaled.set_signal_priority(invalid_id, 1),
+            Err(SignaledError { message }) if message == format!("Signal ID '{}' does not match any Signal", invalid_id))
+        );
+    }
+
+    #[test]
+    fn test_set_signal_once_invalid_signal_id_error() {
+        let (signaled, invalid_id) = create_signaled_with_invalid_id();
+        assert!(matches!(
+            signaled.set_signal_once(invalid_id, true),
+            Err(SignaledError { message }) if message == format!("Signal ID '{}' does not match any Signal", invalid_id))
+        );
+    }
+
+    #[test]
+    fn test_set_signal_mute_invalid_signal_id_error() {
+        let (signaled, invalid_id) = create_signaled_with_invalid_id();
+        assert!(matches!(
+            signaled.set_signal_mute(invalid_id, true),
             Err(SignaledError { message }) if message == format!("Signal ID '{}' does not match any Signal", invalid_id))
         );
     }
