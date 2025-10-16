@@ -1093,6 +1093,8 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
 
 #[cfg(test)]
 mod tests {
+    use core::panic;
+
     use super::*;
 
     #[test]
@@ -1576,5 +1578,255 @@ mod tests {
         let signal: Signal<i32> = signal_sync!(|_, _| {});
         let _lock = signal.trigger.lock().unwrap();
         assert!(signal.try_remove_trigger().is_err_and(|e| e.message == "Cannot access Signal trigger: lock is already held elsewhere"));
+    }
+
+    fn create_poisoned_signaled() -> (Arc<Signaled<i32>>, SignalId) {
+        let signaled = Arc::new(Signaled::new(0));
+        let signal_id = signaled.add_signal(signal_sync!(|_, _| panic!())).unwrap();
+
+        let signaled_clone = Arc::clone(&signaled);
+        let result = std::panic::catch_unwind(move || {
+            let _ = signaled_clone.set(1);
+        });
+        assert!(result.is_err());
+        (signaled, signal_id)
+    }
+
+    #[test]
+    fn test_set_poisoned_lock_error() {
+        let (signaled, _) = create_poisoned_signaled();
+        assert!(signaled.set(1).is_err_and(|e| e.message == "Cannot access Signaled value: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_try_set_poisoned_lock_error() {
+        let (signaled, _) = create_poisoned_signaled();
+        assert!(signaled.try_set(1).is_err_and(|e| e.message == "Cannot access Signaled value: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_get_poisoned_lock_error() {
+        let (signaled, _) = create_poisoned_signaled();
+        assert!(signaled.get().is_err_and(|e| e.message == "Cannot access Signaled value: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_try_get_poisoned_lock_error() {
+        let (signaled, _) = create_poisoned_signaled();
+        assert!(signaled.try_get().is_err_and(|e| e.message == "Cannot access Signaled value: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_get_lock_poisoned_lock_error() {
+        let (signaled, _) = create_poisoned_signaled();
+        assert!(signaled.get_lock().is_err_and(|e| e.message == "Cannot access Signaled value: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_try_get_lock_poisoned_lock_error() {
+        let (signaled, _) = create_poisoned_signaled();
+        assert!(signaled.try_get_lock().is_err_and(|e| e.message == "Cannot access Signaled value: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_emit_signals_poisoned_lock_error() {
+        let (signaled, _) = create_poisoned_signaled();
+        assert!(signaled.emit_signals(&1, &2).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_try_emit_signals_poisoned_lock_error() {
+        let (signaled, _) = create_poisoned_signaled();
+        assert!(signaled.try_emit_signals(&1, &2).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_add_signal_poisoned_lock_error() {
+        let (signaled, _) = create_poisoned_signaled();
+        assert!(signaled.add_signal(signal_sync!(|_, _| {})).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_try_add_signal_poisoned_lock_error() {
+        let (signaled, _) = create_poisoned_signaled();
+        assert!(signaled.try_add_signal(signal_sync!(|_, _| {})).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_remove_signal_poisoned_lock_error() {
+        let (signaled, signal_id) = create_poisoned_signaled();
+        assert!(signaled.remove_signal(signal_id).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_try_remove_signal_poisoned_lock_error() {
+        let (signaled, signal_id) = create_poisoned_signaled();
+        assert!(signaled.try_remove_signal(signal_id).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_set_signal_callback_poisoned_lock_error() {
+        let (signaled, signal_id) = create_poisoned_signaled();
+        assert!(signaled.set_signal_callback(signal_id, |_, _| {}).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_try_set_signal_callback_poisoned_lock_error() {
+        let (signaled, signal_id) = create_poisoned_signaled();
+        assert!(signaled.try_set_signal_callback(signal_id, |_, _| {}).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_set_signal_trigger_poisoned_lock_error() {
+        let (signaled, signal_id) = create_poisoned_signaled();
+        assert!(signaled.set_signal_trigger(signal_id, |_, _| true).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_try_set_signal_trigger_poisoned_lock_error() {
+        let (signaled, signal_id) = create_poisoned_signaled();
+        assert!(signaled.try_set_signal_trigger(signal_id, |_, _| true).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_remove_signal_trigger_poisoned_lock_error() {
+        let (signaled, signal_id) = create_poisoned_signaled();
+        assert!(signaled.remove_signal_trigger(signal_id).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_try_remove_signal_trigger_poisoned_lock_error() {
+        let (signaled, signal_id) = create_poisoned_signaled();
+        assert!(signaled.remove_signal_trigger(signal_id).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_emit_poisoned_lock_error() {
+        {
+            let signal = Arc::new(signal_sync!(|_, _| {}));
+            let signal_clone = Arc::clone(&signal);
+            let result = std::panic::catch_unwind(move || {
+                let _lock = signal_clone.callback.lock().unwrap();
+                panic!();
+            });
+
+            assert!(result.is_err());
+            assert!(signal.emit(&1, &2).is_err_and(|e| e.message == "Cannot access Signal callback: lock is poisoned due to a previous panic"));
+        }
+        {
+            let signal = Arc::new(signal_sync!(|_, _| {}));
+            let signal_clone = Arc::clone(&signal);
+            let result = std::panic::catch_unwind(move || {
+                let _lock = signal_clone.trigger.lock().unwrap();
+                panic!();
+            });
+
+            assert!(result.is_err());
+            assert!(signal.emit(&1, &2).is_err_and(|e| e.message == "Cannot access Signal trigger: lock is poisoned due to a previous panic"));
+        }
+    }
+
+    #[test]
+    fn test_try_emit_poisoned_lock_error() {
+        {
+            let signal = Arc::new(signal_sync!(|_, _| {}));
+            let signal_clone = Arc::clone(&signal);
+            let result = std::panic::catch_unwind(move || {
+                let _lock = signal_clone.callback.lock().unwrap();
+                panic!();
+            });
+
+            assert!(result.is_err());
+            assert!(signal.try_emit(&1, &2).is_err_and(|e| e.message == "Cannot access Signal callback: lock is poisoned due to a previous panic"));
+        }
+        {
+            let signal = Arc::new(signal_sync!(|_, _| {}));
+            let signal_clone = Arc::clone(&signal);
+            let result = std::panic::catch_unwind(move || {
+                let _lock = signal_clone.trigger.lock().unwrap();
+                panic!();
+            });
+
+            assert!(result.is_err());
+            assert!(signal.try_emit(&1, &2).is_err_and(|e| e.message == "Cannot access Signal trigger: lock is poisoned due to a previous panic"));
+        }
+    }
+
+    #[test]
+    fn test_set_callback_poisoned_lock_error() {
+        let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
+        let signal_clone = Arc::clone(&signal);
+        let result = std::panic::catch_unwind(move || {
+            let _lock = signal_clone.callback.lock().unwrap();
+            panic!();
+        });
+
+        assert!(result.is_err());
+        assert!(signal.set_callback(|_, _| {}).is_err_and(|e| e.message == "Cannot access Signal callback: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_try_set_callback_poisoned_lock_error() {
+        let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
+        let signal_clone = Arc::clone(&signal);
+        let result = std::panic::catch_unwind(move || {
+            let _lock = signal_clone.callback.lock().unwrap();
+            panic!();
+        });
+
+        assert!(result.is_err());
+        assert!(signal.try_set_callback(|_, _| {}).is_err_and(|e| e.message == "Cannot access Signal callback: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_set_trigger_poisoned_lock_error() {
+        let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
+        let signal_clone = Arc::clone(&signal);
+        let result = std::panic::catch_unwind(move || {
+            let _lock = signal_clone.trigger.lock().unwrap();
+            panic!();
+        });
+
+        assert!(result.is_err());
+        assert!(signal.set_trigger(|_, _| true).is_err_and(|e| e.message == "Cannot access Signal trigger: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_try_set_trigger_poisoned_lock_error() {
+        let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
+        let signal_clone = Arc::clone(&signal);
+        let result = std::panic::catch_unwind(move || {
+            let _lock = signal_clone.trigger.lock().unwrap();
+            panic!();
+        });
+
+        assert!(result.is_err());
+        assert!(signal.try_set_trigger(|_, _| true).is_err_and(|e| e.message == "Cannot access Signal trigger: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_remove_trigger_poisoned_lock_error() {
+        let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
+        let signal_clone = Arc::clone(&signal);
+        let result = std::panic::catch_unwind(move || {
+            let _lock = signal_clone.trigger.lock().unwrap();
+            panic!();
+        });
+
+        assert!(result.is_err());
+        assert!(signal.remove_trigger().is_err_and(|e| e.message == "Cannot access Signal trigger: lock is poisoned due to a previous panic"));
+    }
+
+    #[test]
+    fn test_try_remove_trigger_poisoned_lock_error() {
+        let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
+        let signal_clone = Arc::clone(&signal);
+        let result = std::panic::catch_unwind(move || {
+            let _lock = signal_clone.trigger.lock().unwrap();
+            panic!();
+        });
+
+        assert!(result.is_err());
+        assert!(signal.try_remove_trigger().is_err_and(|e| e.message == "Cannot access Signal trigger: lock is poisoned due to a previous panic"));
     }
 }
