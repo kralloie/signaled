@@ -1581,113 +1581,42 @@ mod tests {
         (signaled, signal_id)
     }
 
-    #[test]
-    fn test_set_poisoned_lock_error() {
-        let (signaled, _) = create_poisoned_signaled();
-        assert!(signaled.set(1).is_err_and(|e| e.message == "Cannot access Signaled value: lock is poisoned due to a previous panic"));
+    macro_rules! test_signaled_poisoned_locks {
+        ($test_name:ident, $method:ident $(, $args:expr)*; $word:expr) => {
+            #[test]
+            fn $test_name() {
+                let (signaled, _) = create_poisoned_signaled();
+                let expected_message = format!("Cannot access Signaled {}: lock is poisoned due to a previous panic", $word);
+                assert!(signaled.$method($($args),*).is_err_and(|e| e.message == expected_message));
+            }
+        };
+        ($test_name:ident, $method:ident $(, $args:expr)*; $word:expr, $use_id:tt) => {
+            #[test]
+            fn $test_name() {
+                let (signaled, signal_id) = create_poisoned_signaled();
+                let expected_message = format!("Cannot access Signaled {}: lock is poisoned due to a previous panic", $word);
+                assert!(signaled.$method(signal_id $(, $args),*).is_err_and(|e| e.message == expected_message));
+            }
+        }
     }
-
-    #[test]
-    fn test_try_set_poisoned_lock_error() {
-        let (signaled, _) = create_poisoned_signaled();
-        assert!(signaled.try_set(1).is_err_and(|e| e.message == "Cannot access Signaled value: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_get_poisoned_lock_error() {
-        let (signaled, _) = create_poisoned_signaled();
-        assert!(signaled.get().is_err_and(|e| e.message == "Cannot access Signaled value: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_try_get_poisoned_lock_error() {
-        let (signaled, _) = create_poisoned_signaled();
-        assert!(signaled.try_get().is_err_and(|e| e.message == "Cannot access Signaled value: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_get_lock_poisoned_lock_error() {
-        let (signaled, _) = create_poisoned_signaled();
-        assert!(signaled.get_lock().is_err_and(|e| e.message == "Cannot access Signaled value: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_try_get_lock_poisoned_lock_error() {
-        let (signaled, _) = create_poisoned_signaled();
-        assert!(signaled.try_get_lock().is_err_and(|e| e.message == "Cannot access Signaled value: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_emit_signals_poisoned_lock_error() {
-        let (signaled, _) = create_poisoned_signaled();
-        assert!(signaled.emit_signals(&1, &2).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_try_emit_signals_poisoned_lock_error() {
-        let (signaled, _) = create_poisoned_signaled();
-        assert!(signaled.try_emit_signals(&1, &2).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_add_signal_poisoned_lock_error() {
-        let (signaled, _) = create_poisoned_signaled();
-        assert!(signaled.add_signal(signal_sync!(|_, _| {})).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_try_add_signal_poisoned_lock_error() {
-        let (signaled, _) = create_poisoned_signaled();
-        assert!(signaled.try_add_signal(signal_sync!(|_, _| {})).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_remove_signal_poisoned_lock_error() {
-        let (signaled, signal_id) = create_poisoned_signaled();
-        assert!(signaled.remove_signal(signal_id).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_try_remove_signal_poisoned_lock_error() {
-        let (signaled, signal_id) = create_poisoned_signaled();
-        assert!(signaled.try_remove_signal(signal_id).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_set_signal_callback_poisoned_lock_error() {
-        let (signaled, signal_id) = create_poisoned_signaled();
-        assert!(signaled.set_signal_callback(signal_id, |_, _| {}).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_try_set_signal_callback_poisoned_lock_error() {
-        let (signaled, signal_id) = create_poisoned_signaled();
-        assert!(signaled.try_set_signal_callback(signal_id, |_, _| {}).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_set_signal_trigger_poisoned_lock_error() {
-        let (signaled, signal_id) = create_poisoned_signaled();
-        assert!(signaled.set_signal_trigger(signal_id, |_, _| true).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_try_set_signal_trigger_poisoned_lock_error() {
-        let (signaled, signal_id) = create_poisoned_signaled();
-        assert!(signaled.try_set_signal_trigger(signal_id, |_, _| true).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_remove_signal_trigger_poisoned_lock_error() {
-        let (signaled, signal_id) = create_poisoned_signaled();
-        assert!(signaled.remove_signal_trigger(signal_id).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_try_remove_signal_trigger_poisoned_lock_error() {
-        let (signaled, signal_id) = create_poisoned_signaled();
-        assert!(signaled.remove_signal_trigger(signal_id).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is poisoned due to a previous panic"));
-    }
+    test_signaled_poisoned_locks!(test_set_poisoned_lock_error, set, 1; "value");
+    test_signaled_poisoned_locks!(test_try_set_poisoned_lock_error, try_set, 1; "value");
+    test_signaled_poisoned_locks!(test_get_poisoned_lock_error, get; "value");
+    test_signaled_poisoned_locks!(test_try_get_poisoned_lock_error, try_get; "value");
+    test_signaled_poisoned_locks!(test_get_lock_poisoned_lock_error, get_lock; "value");
+    test_signaled_poisoned_locks!(test_try_get_lock_poisoned_lock_error, try_get_lock; "value");
+    test_signaled_poisoned_locks!(test_emit_signals_poisoned_lock_error, emit_signals, &1, &2; "signals");
+    test_signaled_poisoned_locks!(test_try_emit_signals_poisoned_lock_error, try_emit_signals, &1, &2; "signals");
+    test_signaled_poisoned_locks!(test_add_signal_poisoned_lock_error, add_signal, signal_sync!(|_,_| {}); "signals");
+    test_signaled_poisoned_locks!(test_try_add_signal_poisoned_lock_error, try_add_signal, signal_sync!(|_,_| {}); "signals");
+    test_signaled_poisoned_locks!(test_remove_signal_poisoned_lock_error, remove_signal; "signals", true);
+    test_signaled_poisoned_locks!(test_try_remove_signal_poisoned_lock_error, try_remove_signal; "signals", true);
+    test_signaled_poisoned_locks!(test_set_signal_callback_poisoned_lock_error, set_signal_callback, |_, _| {}; "signals", true);
+    test_signaled_poisoned_locks!(test_try_set_signal_callback_poisoned_lock_error, try_set_signal_callback, |_, _| {}; "signals", true);
+    test_signaled_poisoned_locks!(test_set_signal_trigger_poisoned_lock_error, set_signal_trigger, |_, _| true; "signals", true);
+    test_signaled_poisoned_locks!(test_try_set_signal_trigger_poisoned_lock_error, try_set_signal_trigger, |_, _| true; "signals", true);
+    test_signaled_poisoned_locks!(test_remove_signal_trigger_poisoned_lock_error, remove_signal_trigger; "signals", true);
+    test_signaled_poisoned_locks!(test_try_remove_signal_trigger_poisoned_lock_error, try_remove_signal_trigger; "signals", true);
 
     #[test]
     fn test_emit_poisoned_lock_error() {
