@@ -1581,7 +1581,9 @@ mod tests {
         (signaled, signal_id)
     }
 
-    macro_rules! test_signaled_poisoned_locks {
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    macro_rules! test_signaled_poisoned_lock {
         ($test_name:ident, $method:ident $(, $args:expr)*; $word:expr) => {
             #[test]
             fn $test_name() {
@@ -1599,154 +1601,55 @@ mod tests {
             }
         }
     }
-    test_signaled_poisoned_locks!(test_set_poisoned_lock_error, set, 1; "value");
-    test_signaled_poisoned_locks!(test_try_set_poisoned_lock_error, try_set, 1; "value");
-    test_signaled_poisoned_locks!(test_get_poisoned_lock_error, get; "value");
-    test_signaled_poisoned_locks!(test_try_get_poisoned_lock_error, try_get; "value");
-    test_signaled_poisoned_locks!(test_get_lock_poisoned_lock_error, get_lock; "value");
-    test_signaled_poisoned_locks!(test_try_get_lock_poisoned_lock_error, try_get_lock; "value");
-    test_signaled_poisoned_locks!(test_emit_signals_poisoned_lock_error, emit_signals, &1, &2; "signals");
-    test_signaled_poisoned_locks!(test_try_emit_signals_poisoned_lock_error, try_emit_signals, &1, &2; "signals");
-    test_signaled_poisoned_locks!(test_add_signal_poisoned_lock_error, add_signal, signal_sync!(|_,_| {}); "signals");
-    test_signaled_poisoned_locks!(test_try_add_signal_poisoned_lock_error, try_add_signal, signal_sync!(|_,_| {}); "signals");
-    test_signaled_poisoned_locks!(test_remove_signal_poisoned_lock_error, remove_signal; "signals", true);
-    test_signaled_poisoned_locks!(test_try_remove_signal_poisoned_lock_error, try_remove_signal; "signals", true);
-    test_signaled_poisoned_locks!(test_set_signal_callback_poisoned_lock_error, set_signal_callback, |_, _| {}; "signals", true);
-    test_signaled_poisoned_locks!(test_try_set_signal_callback_poisoned_lock_error, try_set_signal_callback, |_, _| {}; "signals", true);
-    test_signaled_poisoned_locks!(test_set_signal_trigger_poisoned_lock_error, set_signal_trigger, |_, _| true; "signals", true);
-    test_signaled_poisoned_locks!(test_try_set_signal_trigger_poisoned_lock_error, try_set_signal_trigger, |_, _| true; "signals", true);
-    test_signaled_poisoned_locks!(test_remove_signal_trigger_poisoned_lock_error, remove_signal_trigger; "signals", true);
-    test_signaled_poisoned_locks!(test_try_remove_signal_trigger_poisoned_lock_error, try_remove_signal_trigger; "signals", true);
+    test_signaled_poisoned_lock!(test_set_poisoned_lock_error, set, 1; "value");
+    test_signaled_poisoned_lock!(test_try_set_poisoned_lock_error, try_set, 1; "value");
+    test_signaled_poisoned_lock!(test_get_poisoned_lock_error, get; "value");
+    test_signaled_poisoned_lock!(test_try_get_poisoned_lock_error, try_get; "value");
+    test_signaled_poisoned_lock!(test_get_lock_poisoned_lock_error, get_lock; "value");
+    test_signaled_poisoned_lock!(test_try_get_lock_poisoned_lock_error, try_get_lock; "value");
+    test_signaled_poisoned_lock!(test_emit_signals_poisoned_lock_error, emit_signals, &1, &2; "signals");
+    test_signaled_poisoned_lock!(test_try_emit_signals_poisoned_lock_error, try_emit_signals, &1, &2; "signals");
+    test_signaled_poisoned_lock!(test_add_signal_poisoned_lock_error, add_signal, signal_sync!(|_,_| {}); "signals");
+    test_signaled_poisoned_lock!(test_try_add_signal_poisoned_lock_error, try_add_signal, signal_sync!(|_,_| {}); "signals");
+    test_signaled_poisoned_lock!(test_remove_signal_poisoned_lock_error, remove_signal; "signals", true);
+    test_signaled_poisoned_lock!(test_try_remove_signal_poisoned_lock_error, try_remove_signal; "signals", true);
+    test_signaled_poisoned_lock!(test_set_signal_callback_poisoned_lock_error, set_signal_callback, |_, _| {}; "signals", true);
+    test_signaled_poisoned_lock!(test_try_set_signal_callback_poisoned_lock_error, try_set_signal_callback, |_, _| {}; "signals", true);
+    test_signaled_poisoned_lock!(test_set_signal_trigger_poisoned_lock_error, set_signal_trigger, |_, _| true; "signals", true);
+    test_signaled_poisoned_lock!(test_try_set_signal_trigger_poisoned_lock_error, try_set_signal_trigger, |_, _| true; "signals", true);
+    test_signaled_poisoned_lock!(test_remove_signal_trigger_poisoned_lock_error, remove_signal_trigger; "signals", true);
+    test_signaled_poisoned_lock!(test_try_remove_signal_trigger_poisoned_lock_error, try_remove_signal_trigger; "signals", true);
 
-    #[test]
-    fn test_emit_poisoned_lock_error() {
-        {
-            let signal = Arc::new(signal_sync!(|_, _| {}));
-            let signal_clone = Arc::clone(&signal);
-            let result = std::panic::catch_unwind(move || {
-                let _lock = signal_clone.callback.lock().unwrap();
-                panic!();
-            });
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-            assert!(result.is_err());
-            assert!(signal.emit(&1, &2).is_err_and(|e| e.message == "Cannot access Signal callback: lock is poisoned due to a previous panic"));
-        }
-        {
-            let signal = Arc::new(signal_sync!(|_, _| {}));
-            let signal_clone = Arc::clone(&signal);
-            let result = std::panic::catch_unwind(move || {
-                let _lock = signal_clone.trigger.lock().unwrap();
-                panic!();
-            });
-
-            assert!(result.is_err());
-            assert!(signal.emit(&1, &2).is_err_and(|e| e.message == "Cannot access Signal trigger: lock is poisoned due to a previous panic"));
-        }
+    macro_rules! test_signal_poisoned_lock {
+        ($test_name:ident, $lock:ident, $method:ident $(, $args:expr)*; $word:expr) => {
+            #[test]
+            fn $test_name() {
+                let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
+                let signal_clone = Arc::clone(&signal);
+                let result = std::panic::catch_unwind(move || {
+                    let _lock = signal_clone.$lock.lock().unwrap();
+                    panic!();
+                });
+                assert!(result.is_err());
+                let expected_message = format!("Cannot access Signal {}: lock is poisoned due to a previous panic", $word);
+                assert!(signal.$method($($args),*).is_err_and(|e| e.message == expected_message));
+            }
+        };
     }
+    test_signal_poisoned_lock!(test_emit_poisoned_callback_lock_error, callback, emit, &1, &2; "callback");
+    test_signal_poisoned_lock!(test_emit_poisoned_trigger_lock_error, trigger, emit, &1, &2; "trigger");
+    test_signal_poisoned_lock!(test_try_emit_poisoned_callback_lock_error, callback, try_emit, &1, &2; "callback");
+    test_signal_poisoned_lock!(test_try_emit_poisoned_trigger_lock_error, trigger, try_emit, &1, &2; "trigger");
+    test_signal_poisoned_lock!(test_set_callback_poisoned_lock_error, callback, set_callback, |_, _| {}; "callback");
+    test_signal_poisoned_lock!(test_try_set_callback_poisoned_lock_error, callback, try_set_callback, |_, _| {}; "callback");
+    test_signal_poisoned_lock!(test_set_trigger_poisoned_lock_error, trigger, set_trigger, |_, _| true; "trigger");
+    test_signal_poisoned_lock!(test_try_set_trigger_poisoned_lock_error, trigger, try_set_trigger, |_, _| true; "trigger");
+    test_signal_poisoned_lock!(test_remove_trigger_poisoned_lock_error, trigger, remove_trigger; "trigger");
+    test_signal_poisoned_lock!(test_try_remove_trigger_poisoned_lock_error, trigger, try_remove_trigger; "trigger");
 
-    #[test]
-    fn test_try_emit_poisoned_lock_error() {
-        {
-            let signal = Arc::new(signal_sync!(|_, _| {}));
-            let signal_clone = Arc::clone(&signal);
-            let result = std::panic::catch_unwind(move || {
-                let _lock = signal_clone.callback.lock().unwrap();
-                panic!();
-            });
-
-            assert!(result.is_err());
-            assert!(signal.try_emit(&1, &2).is_err_and(|e| e.message == "Cannot access Signal callback: lock is poisoned due to a previous panic"));
-        }
-        {
-            let signal = Arc::new(signal_sync!(|_, _| {}));
-            let signal_clone = Arc::clone(&signal);
-            let result = std::panic::catch_unwind(move || {
-                let _lock = signal_clone.trigger.lock().unwrap();
-                panic!();
-            });
-
-            assert!(result.is_err());
-            assert!(signal.try_emit(&1, &2).is_err_and(|e| e.message == "Cannot access Signal trigger: lock is poisoned due to a previous panic"));
-        }
-    }
-
-    #[test]
-    fn test_set_callback_poisoned_lock_error() {
-        let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
-        let signal_clone = Arc::clone(&signal);
-        let result = std::panic::catch_unwind(move || {
-            let _lock = signal_clone.callback.lock().unwrap();
-            panic!();
-        });
-
-        assert!(result.is_err());
-        assert!(signal.set_callback(|_, _| {}).is_err_and(|e| e.message == "Cannot access Signal callback: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_try_set_callback_poisoned_lock_error() {
-        let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
-        let signal_clone = Arc::clone(&signal);
-        let result = std::panic::catch_unwind(move || {
-            let _lock = signal_clone.callback.lock().unwrap();
-            panic!();
-        });
-
-        assert!(result.is_err());
-        assert!(signal.try_set_callback(|_, _| {}).is_err_and(|e| e.message == "Cannot access Signal callback: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_set_trigger_poisoned_lock_error() {
-        let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
-        let signal_clone = Arc::clone(&signal);
-        let result = std::panic::catch_unwind(move || {
-            let _lock = signal_clone.trigger.lock().unwrap();
-            panic!();
-        });
-
-        assert!(result.is_err());
-        assert!(signal.set_trigger(|_, _| true).is_err_and(|e| e.message == "Cannot access Signal trigger: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_try_set_trigger_poisoned_lock_error() {
-        let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
-        let signal_clone = Arc::clone(&signal);
-        let result = std::panic::catch_unwind(move || {
-            let _lock = signal_clone.trigger.lock().unwrap();
-            panic!();
-        });
-
-        assert!(result.is_err());
-        assert!(signal.try_set_trigger(|_, _| true).is_err_and(|e| e.message == "Cannot access Signal trigger: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_remove_trigger_poisoned_lock_error() {
-        let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
-        let signal_clone = Arc::clone(&signal);
-        let result = std::panic::catch_unwind(move || {
-            let _lock = signal_clone.trigger.lock().unwrap();
-            panic!();
-        });
-
-        assert!(result.is_err());
-        assert!(signal.remove_trigger().is_err_and(|e| e.message == "Cannot access Signal trigger: lock is poisoned due to a previous panic"));
-    }
-
-    #[test]
-    fn test_try_remove_trigger_poisoned_lock_error() {
-        let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
-        let signal_clone = Arc::clone(&signal);
-        let result = std::panic::catch_unwind(move || {
-            let _lock = signal_clone.trigger.lock().unwrap();
-            panic!();
-        });
-
-        assert!(result.is_err());
-        assert!(signal.try_remove_trigger().is_err_and(|e| e.message == "Cannot access Signal trigger: lock is poisoned due to a previous panic"));
-    }
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     fn create_signaled_with_invalid_id() -> (Signaled<i32>, SignalId) {
         let signaled = Signaled::new(0);
@@ -1778,5 +1681,7 @@ mod tests {
     test_invalid_id_error!(test_set_signal_priority_invalid_signal_id_error, set_signal_priority, 1);
     test_invalid_id_error!(test_set_signal_once_invalid_signal_id_error, set_signal_once, true);
     test_invalid_id_error!(test_set_signal_mute_invalid_signal_id_error, set_signal_mute, true);
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 }

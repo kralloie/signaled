@@ -1082,6 +1082,8 @@ mod tests {
         (signaled, invalid_id)
     }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
     macro_rules! test_invalid_id_error {
         ($test_name:ident, $method:ident, $($args:expr),*) => {
             #[test]
@@ -1101,6 +1103,8 @@ mod tests {
     test_invalid_id_error!(test_set_signal_priority_invalid_signal_id_error, set_signal_priority, 1);
     test_invalid_id_error!(test_set_signal_once_invalid_signal_id_error, set_signal_once, true);
     test_invalid_id_error!(test_set_signal_mute_invalid_signal_id_error, set_signal_mute, true);
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     #[test]
     fn test_once_signal() {
