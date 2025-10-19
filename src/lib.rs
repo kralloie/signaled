@@ -323,31 +323,6 @@ impl<T> Display for Signal<T> {
     }
 }
 
-impl<T> Clone for Signal<T> {
-    /// Creates a clone of the [`Signal`], retaining the same `id`.
-    /// 
-    /// When a [`Signal`] is cloned the `id` is reutilized for easier identification since `callback` and `trigger` cannot be visualized.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the callback or trigger are already mutably borrowed.
-    /// 
-    /// # Notes
-    /// 
-    /// Cloned signals share the same callback and trigger pointer.
-    /// Modifying them through `set_callback` or `set_trigger` will only affect the targeted [`Signal`] since those methods drop the [`Rc`] wrapped inside the [`RefCell`] and create a new one
-    fn clone(&self) -> Self {
-        Signal {
-            callback: self.callback.clone(),
-            trigger: self.trigger.clone(),
-            id: self.id.clone(),
-            priority: self.priority.clone(),
-            once: Cell::new(false),
-            mute: Cell::new(false)
-        }
-    }
-}
-
 impl<T> Default for Signal<T> {
     fn default() -> Self {
         Self {
@@ -693,30 +668,6 @@ impl<T: Display> Display for Signaled<T> {
     }
 }
 
-impl<T: Clone> Clone for Signaled<T> {
-    /// Clones the [`Signaled`] instance.
-    /// 
-    /// The contained value `val` is deep-cloned.
-    /// 
-    /// The list of signals is also cloned, but individual [`Signal`]s will initially share their underlying callback and trigger functions with the original. 
-    /// 
-    /// See [`Signal::clone`] for more details.
-    /// 
-    /// Because they also share the same `id`, only one clone of a particular signal can be added to a [`Signaled`] `signals` collection.
-    /// However it is possible to create 2 identical [`Signal`]s by repeating the same creating process with [`Signal::new`] or the [`signal!`] macro.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `val` or `signals` are borrowed at the time of cloning.
-    /// Use `try_clone` for a non-panicking alternative.
-    fn clone(&self) -> Self {
-        Signaled {
-            val: self.val.clone(),
-            signals: self.signals.clone()
-        }
-    }
-}
-
 impl<T: Clone> Signaled<T> {
     /// Returns a cloned copy of the current value or an error if `val` is currently mutably borrowed.
     ///
@@ -728,39 +679,6 @@ impl<T: Clone> Signaled<T> {
             Ok(r) => Ok(r.clone()),
             Err(_) => Err(signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }))
         }
-    }
-
-    /// Creates a copy of the [`Signaled`], cloning `val` and `signals`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SignaledError`] if `val` or `signals` are already borrowed.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use signaled::{Signaled, SignaledError, ErrorType, ErrorSource};
-    ///
-    /// let s1 = Signaled::new(0);
-    /// let s2 = s1.try_clone().unwrap();
-    /// s1.set(1).unwrap();
-    /// assert_eq!(s2.get().unwrap(), 0); // Independent copy
-    /// ```
-    pub fn try_clone(&self) -> Result<Self, SignaledError> {
-        let signals_clone = self.signals
-            .try_borrow()
-            .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?
-            .clone();
-        let val_clone = self.val
-            .try_borrow()
-            .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }))?
-            .clone();
-        Ok(
-            Self {
-                val: RefCell::new(val_clone),
-                signals: RefCell::new(signals_clone)
-            }
-        )
     }
 }
 
@@ -928,14 +846,6 @@ mod tests {
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-    #[test]
-    #[should_panic]
-    fn test_clone_borrow_panic() {
-        let signaled_a = Signaled::new(0);
-        let _borrow = signaled_a.val.borrow_mut();
-        let _signaled_b = signaled_a.clone();
-    }
-
     macro_rules! test_signaled_borrow_error {
         ($test_name:ident, $borrow:ident, $borrow_type:ident, $method:ident $(, $args:expr)*; $error:expr) => {
             #[test]
@@ -963,8 +873,6 @@ mod tests {
     test_signaled_borrow_error!(test_set_borrow_error, val, borrow, set, 1; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Value }));
     test_signaled_borrow_error!(test_get_ref_borrow_error, val, borrow_mut, get_ref; signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }));
     test_signaled_borrow_error!(test_get_borrow_error, val, borrow_mut, get; signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }));
-    test_signaled_borrow_error!(test_try_clone_val_borrow_error, val, borrow_mut, try_clone; signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }));
-    test_signaled_borrow_error!(test_try_clone_signals_borrow_error, signals, borrow_mut, try_clone; signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }));
     test_signaled_borrow_error!(test_emit_signals_borrow_error, signals, borrow, emit_signals, &1, &2; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Signals }));
     test_signaled_borrow_error!(test_add_signal_borrow_error, signals, borrow, add_signal, signal!(|_, _| {}); signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Signals }));
     test_signaled_borrow_error!(test_remove_signal_borrow_error, signals, borrow, remove_signal; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Signals }), true);
