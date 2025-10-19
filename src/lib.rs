@@ -926,40 +926,7 @@ mod tests {
         assert_eq!(test_value.get(), 'a'); // `signal_a` has now the lowest priority (1) so after all callbacks are invoked the valuew ill be 'a'.
     }
 
-    #[test]
-    fn test_set_borrow_error() {
-        let signaled = Signaled::new(0);
-        let _borrow = signaled.get_ref().unwrap();
-        assert!(signaled.set(1).is_err_and(|e| e.message == "Cannot mutably borrow Signaled value, it is already borrowed"));
-    }
-
-    #[test]
-    fn test_get_ref_borrow_error() {
-        let signaled = Signaled::new(0);
-        let _borrow = signaled.val.borrow_mut();
-        assert!(signaled.get_ref().is_err_and(|e| e.message == "Cannot borrow Signaled value, it is already mutably borrowed"));
-    }
-
-    #[test]
-    fn test_get_borrow_error() {
-        let signaled = Signaled::new(0);
-        let _borrow = signaled.val.borrow_mut();
-        assert!(signaled.get().is_err_and(|e| e.message == "Cannot borrow Signaled value, it is already mutably borrowed"));
-    }
-
-    #[test]
-    fn test_try_clone_borrow_error() {
-        {
-            let signaled = Signaled::new(0);
-            let _borrow = signaled.val.borrow_mut();
-            assert!(signaled.try_clone().is_err_and(|e| e.message == "Cannot borrow Signaled value, it is already mutably borrowed"));
-        }
-        {
-            let signaled = Signaled::new(0);
-            let _borrow = signaled.signals.borrow_mut();
-            assert!(signaled.try_clone().is_err_and(|e| e.message == "Cannot borrow Signaled signals, they are already mutably borrowed"));
-        }
-    }
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     #[test]
     #[should_panic]
@@ -969,111 +936,65 @@ mod tests {
         let _signaled_b = signaled_a.clone();
     }
 
-    #[test]
-    fn test_emit_signals_borrow_error() {
-        let signaled = Signaled::new(0);
-        signaled.add_signal(signal!(|_, _|  {})).unwrap();
-        let _borrow = signaled.signals.borrow();
-        assert!(signaled.emit_signals(&1, &2).is_err_and(|e| e.message == "Cannot mutably borrow Signaled signals, they are already borrowed"));
+    macro_rules! test_signaled_borrow_error {
+        ($test_name:ident, $borrow:ident, $borrow_type:ident, $method:ident $(, $args:expr)*; $error:expr) => {
+            #[test]
+            fn $test_name() {
+                let signaled = Signaled::new(0);
+                let _borrow = signaled.$borrow.$borrow_type();
+                let err: SignaledError = $error;
+                let expected_message = err.message;
+                assert!(signaled.$method($($args),*).is_err_and(|e| e.message == expected_message));
+            }
+        };
+        ($test_name:ident, $borrow:ident, $borrow_type:ident, $method:ident $(, $args:expr)*; $error:expr, $use_id:tt) => {
+            #[test]
+            fn $test_name() {
+                let signaled = Signaled::new(0);
+                let signal_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
+                let _borrow = signaled.$borrow.$borrow_type();
+                let err: SignaledError = $error;
+                let expected_message = err.message;
+                assert!(signaled.$method(signal_id $(, $args),*).is_err_and(|e| e.message == expected_message));
+            }
+        };
     }
 
-    #[test]
-    fn test_add_signal_borrow_error() {
-        let signaled = Signaled::new(0);
-        let _borrow = signaled.signals.borrow();
-        assert!(signaled.add_signal(signal!(|_, _| {})).is_err_and(|e| e.message == "Cannot mutably borrow Signaled signals, they are already borrowed"));
+    test_signaled_borrow_error!(test_set_borrow_error, val, borrow, set, 1; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Value }));
+    test_signaled_borrow_error!(test_get_ref_borrow_error, val, borrow_mut, get_ref; signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }));
+    test_signaled_borrow_error!(test_get_borrow_error, val, borrow_mut, get; signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }));
+    test_signaled_borrow_error!(test_try_clone_val_borrow_error, val, borrow_mut, try_clone; signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }));
+    test_signaled_borrow_error!(test_try_clone_signals_borrow_error, signals, borrow_mut, try_clone; signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }));
+    test_signaled_borrow_error!(test_emit_signals_borrow_error, signals, borrow, emit_signals, &1, &2; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Signals }));
+    test_signaled_borrow_error!(test_add_signal_borrow_error, signals, borrow, add_signal, signal!(|_, _| {}); signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Signals }));
+    test_signaled_borrow_error!(test_remove_signal_borrow_error, signals, borrow, remove_signal; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Signals }), true);
+    test_signaled_borrow_error!(test_set_signal_callback_borrow_error, signals, borrow_mut, set_signal_callback, |_, _| {}; signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }), true);
+    test_signaled_borrow_error!(test_set_signal_trigger_borrow_error, signals, borrow_mut, set_signal_trigger, |_, _| true; signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }), true);
+    test_signaled_borrow_error!(test_remove_signal_trigger_borrow_error, signals, borrow_mut, remove_signal_trigger; signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }), true);
+    test_signaled_borrow_error!(test_set_signal_priority_borrow_error, signals, borrow_mut, set_signal_priority, 1; signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }), true);
+    test_signaled_borrow_error!(test_set_signal_once_borrow_error, signals, borrow_mut, set_signal_once, true; signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }), true);
+    test_signaled_borrow_error!(test_set_signal_mute_borrow_error, signals, borrow_mut, set_signal_mute, true; signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }), true);
+
+    macro_rules! test_signal_borrow_error {
+        ($test_name:ident, $borrow:ident, $borrow_type:ident, $method:ident $(, $args:expr)*; $error:expr) => {
+            #[test]
+            fn $test_name() {
+                let signal: Signal<i32> = signal!(|_, _| {});
+                let _borrow = signal.$borrow.$borrow_type();
+                let err = $error;
+                let expected_message = err.message;
+                assert!(signal.$method($($args),*).is_err_and(|e| e.message == expected_message));
+            }
+        };
     }
 
-    #[test]
-    fn test_remove_signal_borrow_error() {
-        let signaled = Signaled::new(0);
-        let signal_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
-        let _borrow = signaled.signals.borrow();
-        assert!(signaled.remove_signal(signal_id).is_err_and(|e| e.message == "Cannot mutably borrow Signaled signals, they are already borrowed"));
-    }
+    test_signal_borrow_error!(test_emit_trigger_borrow_error, trigger, borrow_mut, emit, &1, &2; signaled_error(ErrorType::BorrowError { source: ErrorSource::SignalTrigger }));
+    test_signal_borrow_error!(test_emit_callback_borrow_error, callback, borrow_mut, emit, &1, &2; signaled_error(ErrorType::BorrowError { source: ErrorSource::SignalCallback }));
+    test_signal_borrow_error!(test_set_callback_borrow_error, callback, borrow, set_callback, |_, _| {}; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::SignalCallback }));
+    test_signal_borrow_error!(test_set_trigger_borrow_error, trigger, borrow, set_trigger, |_, _| true; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::SignalTrigger }));
+    test_signal_borrow_error!(test_remove_trigger_borrow_error, trigger, borrow, remove_trigger; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::SignalTrigger }));
 
-    #[test]
-    fn test_set_signal_callback_borrow_error() {
-        let signaled = Signaled::new(0);
-        let signal_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
-        let _borrow = signaled.signals.borrow_mut();
-        assert!(signaled.set_signal_callback(signal_id, |_, _| {}).is_err_and(|e| e.message == "Cannot borrow Signaled signals, they are already mutably borrowed"));
-    }
-
-    #[test]
-    fn test_set_signal_trigger_borrow_error() {
-        let signaled = Signaled::new(0);
-        let signal_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
-        let _borrow = signaled.signals.borrow_mut();
-        assert!(signaled.set_signal_trigger(signal_id, |_, _| true).is_err_and(|e| e.message == "Cannot borrow Signaled signals, they are already mutably borrowed"));
-    }
-
-    #[test]
-    fn test_remove_signal_trigger_borrow_error() {
-        let signaled = Signaled::new(0);
-        let signal_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
-        let _borrow = signaled.signals.borrow_mut();
-        assert!(signaled.remove_signal_trigger(signal_id).is_err_and(|e| e.message == "Cannot borrow Signaled signals, they are already mutably borrowed"));
-    }
-
-    #[test]
-    fn test_set_signal_priority_borrow_error() {
-        let signaled = Signaled::new(0);
-        let signal_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
-        let _borrow = signaled.signals.borrow_mut();
-        assert!(signaled.set_signal_priority(signal_id, 1).is_err_and(|e| e.message == "Cannot borrow Signaled signals, they are already mutably borrowed"));
-    }
-
-    #[test]
-    fn test_set_signal_once_borrow_error() {
-        let signaled = Signaled::new(0);
-        let signal_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
-        let _borrow = signaled.signals.borrow_mut();
-        assert!(signaled.set_signal_once(signal_id, true).is_err_and(|e| e.message == "Cannot borrow Signaled signals, they are already mutably borrowed"));
-    }
-
-    #[test]
-    fn test_set_signal_mute_borrow_error() {
-        let signaled = Signaled::new(0);
-        let signal_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
-        let _borrow = signaled.signals.borrow_mut();
-        assert!(signaled.set_signal_mute(signal_id, true).is_err_and(|e| e.message == "Cannot borrow Signaled signals, they are already mutably borrowed"));
-    }
-
-    #[test]
-    fn test_emit_borrow_error() {
-        {
-            let signal: Signal<i32> = signal!(|_, _| {});
-            let _borrow = signal.trigger.borrow_mut();
-            assert!(signal.emit(&1, &2).is_err_and(|e| e.message == "Cannot borrow Signal trigger, it is already mutably borrowed"));
-        }
-        {
-            let signal: Signal<i32> = signal!(|_, _| {});
-            let _borrow = signal.callback.borrow_mut();
-            assert!(signal.emit(&1, &2).is_err_and(|e| e.message == "Cannot borrow Signal callback, it is already mutably borrowed"));
-        }
-    }
-
-    #[test] 
-    fn test_set_callback_borrow_error() {
-        let signal: Signal<i32> = signal!(|_, _| {});
-        let _borrow = signal.callback.borrow();
-        assert!(signal.set_callback(|_, _| {}).is_err_and(|e| e.message == "Cannot mutably borrow Signal callback, it is already borrowed"));
-    }
-
-    #[test]
-    fn test_set_trigger_borrow_error() {
-        let signal: Signal<i32> = signal!(|_, _| {});
-        let _borrow = signal.trigger.borrow();
-        assert!(signal.set_trigger(|_, _| true).is_err_and(|e| e.message == "Cannot mutably borrow Signal trigger, it is already borrowed"));
-    }
-
-    #[test]
-    fn test_remove_trigger_borrow_error() {
-        let signal: Signal<i32> = signal!(|_, _| {});
-        let _borrow = signal.trigger.borrow();
-        assert!(signal.remove_trigger().is_err_and(|e| e.message == "Cannot mutably borrow Signal trigger, it is already borrowed"));
-    }
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     fn create_signaled_with_invalid_id() -> (Signaled<i32>, SignalId) {
         let signaled = Signaled::new(0);
@@ -1081,8 +1002,6 @@ mod tests {
         let invalid_id = signal_id + 1;
         (signaled, invalid_id)
     }
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     macro_rules! test_invalid_id_error {
         ($test_name:ident, $method:ident, $($args:expr),*) => {

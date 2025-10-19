@@ -978,10 +978,45 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or if the provided [`SignalId`] does not match any [`Signal`].
+    /// 
+    /// # Warnings
+    /// 
+    /// This function may result in a deadlock if used incorrectly.
+    /// 
+    /// For a non-blocking alternative, see [`try_set_signal_priority`].
     pub fn set_signal_priority(&self, id: SignalId, priority: u64) -> Result<(), SignaledError> {
         let signals = self.signals
             .lock()
             .map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }))?;
+        if let Some(signal) = signals.iter().find(|s| s.id == id) {
+            signal.set_priority(priority);
+            return Ok(())
+        } else {
+            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+        }
+    }
+
+    /// Sets the priority for a [`Signal`] by `id`.
+    ///
+    /// This function unlike [`set_signal_priority`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// 
+    /// # Arguments
+    ///
+    /// * `id` - The `id` of the [`Signal`].
+    /// * `priority` - The new priority value (higher executes first).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or held elsewhere, or if the provided [`SignalId`] does not match any [`Signal`].
+    pub fn try_set_signal_priority(&self, id: SignalId, priority: u64) -> Result<(), SignaledError> {
+        let signals = self.signals
+            .try_lock()
+            .map_err(|e| {
+                match e {
+                    TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }),
+                    TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals })
+                }
+            })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_priority(priority);
             return Ok(())
@@ -1000,10 +1035,45 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or if the provided [`SignalId`] does not match any [`Signal`].
+    ///     
+    /// # Warnings
+    /// 
+    /// This function may result in a deadlock if used incorrectly.
+    /// 
+    /// For a non-blocking alternative, see [`try_set_signal_once`].
     pub fn set_signal_once(&self, id: SignalId, is_once: bool) -> Result<(), SignaledError> {
         let signals = self.signals
             .lock()
             .map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }))?;
+        if let Some(signal) = signals.iter().find(|s| s.id == id) {
+            signal.set_once(is_once);
+            return Ok(())
+        } else {
+            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+        }
+    }
+
+    /// Sets the `once` flag for a [`Signal`] by `id`.
+    ///
+    /// This function unlike [`set_signal_once`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// 
+    /// # Arguments
+    ///
+    /// * `id` - The `id` of the [`Signal`].
+    /// * `is_once` - Boolean that decides if the target [`Signal`] should be `once` or not.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or held elsewhere, or if the provided [`SignalId`] does not match any [`Signal`].
+    pub fn try_set_signal_once(&self, id: SignalId, is_once: bool) -> Result<(), SignaledError> {
+        let signals = self.signals
+            .try_lock()
+            .map_err(|e| {
+                match e {
+                    TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }),
+                    TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals })
+                }
+            })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_once(is_once);
             return Ok(())
@@ -1022,10 +1092,45 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or if the provided [`SignalId`] does not match any [`Signal`].
+    /// 
+    /// # Warnings
+    /// 
+    /// This function may result in a deadlock if used incorrectly.
+    /// 
+    /// For a non-blocking alternative, see [`try_set_signal_mute`].
     pub fn set_signal_mute(&self, id: SignalId, is_mute: bool) -> Result<(), SignaledError> {
         let signals = self.signals
             .lock()
             .map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }))?;
+        if let Some(signal) = signals.iter().find(|s| s.id == id) {
+            signal.set_mute(is_mute);
+            return Ok(())
+        } else {
+            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+        }
+    }
+    
+    /// Sets the `mute` flag for a [`Signal`] by `id`.
+    ///
+    /// This function unlike [`set_signal_mute`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// 
+    /// # Arguments
+    ///
+    /// * `id` - The `id` of the [`Signal`].
+    /// * `is_mute` - Boolean that decides if the target [`Signal`] should be muted or not.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or held elsewhere, or if the provided [`SignalId`] does not match any [`Signal`].
+    pub fn try_set_signal_mute(&self, id: SignalId, is_mute: bool) -> Result<(), SignaledError> {
+        let signals = self.signals
+            .try_lock()
+            .map_err(|e| {
+                match e {
+                    TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }),
+                    TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals })
+                }
+            })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_mute(is_mute);
             return Ok(())
@@ -1466,108 +1571,66 @@ mod tests {
         assert_eq!(*calls.lock().unwrap(), 1); // Signal is `once` so the first thread that calls it removes it from the `signals` collection.
     }
 
-    #[test] 
-    fn test_try_set_would_block_error() {
-        let signaled = Signaled::new(0);
-        let _read_lock = signaled.get_lock().unwrap();
-        assert!(signaled.try_set(1).is_err_and(|e| e.message == "Cannot access Signaled value: lock is already held elsewhere"));
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    macro_rules! test_signaled_would_block_error {
+        ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr) => { 
+            #[test]
+            fn $test_name() {
+                let signaled = Signaled::new(0);
+                let _lock = signaled.$lock.$get_lock().unwrap();
+                let err: SignaledError = $error;
+                let expected_message = err.message;
+                assert!(signaled.$method($($args),*).is_err_and(|e| e.message == expected_message));
+            }
+        };
+        ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr, $use_id:tt) => { 
+            #[test]
+            fn $test_name() {
+                let signaled = Signaled::new(0);
+                let signal_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+                let _lock = signaled.$lock.$get_lock().unwrap();
+                let err: SignaledError = $error;
+                let expected_message = err.message;
+                assert!(signaled.$method(signal_id $(, $args),*).is_err_and(|e| e.message == expected_message));
+            }
+        };
     }
 
-    #[test]
-    fn test_try_get_would_block_error() {
-        let signaled = Signaled::new(0);
-        let _write_lock = signaled.val.write().unwrap();
-        assert!(signaled.try_get().is_err_and(|e| e.message == "Cannot access Signaled value: lock is already held elsewhere"));
+    test_signaled_would_block_error!(test_try_set_would_block_error, val, read, try_set, 1; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Value }));
+    test_signaled_would_block_error!(test_try_get_would_block_error, val, write, try_get; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Value }));
+    test_signaled_would_block_error!(test_try_get_lock_would_block_error, val, write, try_get_lock; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Value }));
+    test_signaled_would_block_error!(test_try_emit_signals_would_block_error, signals, lock, try_emit_signals, &1, &2; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }));
+    test_signaled_would_block_error!(test_try_add_signal_would_block_error, signals, lock, try_add_signal, signal_sync!(|_, _| {}); signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }));
+    test_signaled_would_block_error!(test_try_remove_signal_would_block_error, signals, lock, try_remove_signal; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }), true);
+    test_signaled_would_block_error!(test_try_set_signal_callback_would_block_error, signals, lock, try_set_signal_callback, |_, _| {}; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }), true);
+    test_signaled_would_block_error!(test_try_set_signal_trigger_would_block_error, signals, lock, try_set_signal_trigger, |_, _| true; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }), true);
+    test_signaled_would_block_error!(test_try_remove_signal_trigger_would_block_error, signals, lock, try_remove_signal_trigger; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }), true);
+    test_signaled_would_block_error!(test_try_set_signal_priority_would_block_error, signals, lock, try_set_signal_priority, 1; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }), true);
+    test_signaled_would_block_error!(test_try_set_signal_once_would_block_error, signals, lock, try_set_signal_once, true; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }), true);
+    test_signaled_would_block_error!(test_try_set_signal_mute_would_block_error, signals, lock, try_set_signal_mute, true; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }), true);
+
+    macro_rules! test_signal_would_block_error {
+        ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr) => {
+            #[test]
+            fn $test_name() {
+                let signal: Signal<i32> = signal_sync!(|_, _| {});
+                let _lock = signal.$lock.$get_lock().unwrap();
+                let err: SignaledError = $error;
+                let expected_message = err.message;
+                assert!(signal.$method($($args),*).is_err_and(|e| e.message == expected_message));
+            }
+        };
     }
 
-    #[test]
-    fn test_try_get_lock_would_block_error() {
-        let signaled = Signaled::new(0);
-        let _write_lock = signaled.val.write().unwrap();
-        assert!(signaled.try_get_lock().is_err_and(|e| e.message == "Cannot access Signaled value: lock is already held elsewhere"));
-    }
+    test_signal_would_block_error!(test_try_emit_callback_would_block_error, callback, lock, try_emit, &1, &2; signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalCallback }));
+    test_signal_would_block_error!(test_try_emit_trigger_would_block_error, trigger, lock, try_emit, &1, &2; signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalTrigger }));
+    test_signal_would_block_error!(test_try_set_callback_would_block_error, callback, lock, try_set_callback, |_, _| {}; signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalCallback }));
+    test_signal_would_block_error!(test_try_set_trigger_would_block_error, trigger, lock, try_set_trigger, |_, _| true; signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalTrigger }));
+    test_signal_would_block_error!(test_try_remove_trigger_would_block_error, trigger, lock, try_remove_trigger; signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalTrigger }));
 
-    #[test]
-    fn test_try_emit_signals_would_block_error() {
-        let signaled = Signaled::new(0);
-        signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let _lock = signaled.signals.lock().unwrap();
-        assert!(signaled.try_emit_signals(&1, &2).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is already held elsewhere"));
-    }
-
-    #[test]
-    fn test_try_add_signal_would_block_error() {
-        let signaled = Signaled::new(0);
-        let _lock = signaled.signals.lock().unwrap();
-        assert!(signaled.try_add_signal(signal_sync!(|_, _| {})).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is already held elsewhere"));
-    }
-
-    #[test]
-    fn test_try_remove_signal_would_block_error() {
-        let signaled = Signaled::new(0);
-        let signal_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let _lock = signaled.signals.lock().unwrap();
-        assert!(signaled.try_remove_signal(signal_id).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is already held elsewhere"));
-    }
-
-    #[test]
-    fn test_try_set_signal_callback_would_block_error() {
-        let signaled = Signaled::new(0);
-        let signal_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let _lock = signaled.signals.lock().unwrap();
-        assert!(signaled.try_set_signal_callback(signal_id, |_, _| {}).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is already held elsewhere"));
-    }
-
-    #[test]
-    fn test_try_set_signal_trigger_would_block_error() {
-        let signaled = Signaled::new(0);
-        let signal_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let _lock = signaled.signals.lock().unwrap();
-        assert!(signaled.try_set_signal_trigger(signal_id, |_, _| true).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is already held elsewhere"));
-    }
-    
-    #[test]
-    fn test_try_remove_signal_trigger_would_block_error() {
-        let signaled = Signaled::new(0);
-        let signal_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let _lock = signaled.signals.lock().unwrap();
-        assert!(signaled.try_remove_signal_trigger(signal_id).is_err_and(|e| e.message == "Cannot access Signaled signals: lock is already held elsewhere"));
-    }
-
-    #[test]
-    fn test_try_emit_would_block_error() {
-        {
-            let signal: Signal<i32> = signal_sync!(|_, _| {});
-            let _lock = signal.trigger.lock().unwrap();
-            assert!(signal.try_emit(&1, &2).is_err_and(|e| e.message == "Cannot access Signal trigger: lock is already held elsewhere"));
-        }
-        {
-            let signal: Signal<i32> = signal_sync!(|_, _| {});
-            let _lock = signal.callback.lock().unwrap();
-            assert!(signal.try_emit(&1, &2).is_err_and(|e| e.message == "Cannot access Signal callback: lock is already held elsewhere"));
-        }
-    }
-
-    #[test]
-    fn test_try_set_callback_would_block_error() {
-        let signal: Signal<i32> = signal_sync!(|_, _| {});
-        let _lock = signal.callback.lock().unwrap();
-        assert!(signal.try_set_callback(|_, _| {}).is_err_and(|e| e.message == "Cannot access Signal callback: lock is already held elsewhere"));
-    }
-
-    #[test]
-    fn test_try_set_trigger_would_block_error() {
-        let signal: Signal<i32> = signal_sync!(|_, _| {});
-        let _lock = signal.trigger.lock().unwrap();
-        assert!(signal.try_set_trigger(|_, _| true).is_err_and(|e| e.message == "Cannot access Signal trigger: lock is already held elsewhere"));
-    }
-
-    #[test]
-    fn test_try_remove_trigger_would_block_error() {
-        let signal: Signal<i32> = signal_sync!(|_, _| {});
-        let _lock = signal.trigger.lock().unwrap();
-        assert!(signal.try_remove_trigger().is_err_and(|e| e.message == "Cannot access Signal trigger: lock is already held elsewhere"));
-    }
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     fn create_poisoned_signaled() -> (Arc<Signaled<i32>>, SignalId) {
         let signaled = Arc::new(Signaled::new(0));
@@ -1581,44 +1644,50 @@ mod tests {
         (signaled, signal_id)
     }
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
     macro_rules! test_signaled_poisoned_lock {
-        ($test_name:ident, $method:ident $(, $args:expr)*; $word:expr) => {
+        ($test_name:ident, $method:ident $(, $args:expr)*; $error:expr) => {
             #[test]
             fn $test_name() {
                 let (signaled, _) = create_poisoned_signaled();
-                let expected_message = format!("Cannot access Signaled {}: lock is poisoned due to a previous panic", $word);
+                let err: SignaledError = $error;
+                let expected_message = err.message;
                 assert!(signaled.$method($($args),*).is_err_and(|e| e.message == expected_message));
             }
         };
-        ($test_name:ident, $method:ident $(, $args:expr)*; $word:expr, $use_id:tt) => {
+        ($test_name:ident, $method:ident $(, $args:expr)*; $error:expr, $use_id:tt) => {
             #[test]
             fn $test_name() {
                 let (signaled, signal_id) = create_poisoned_signaled();
-                let expected_message = format!("Cannot access Signaled {}: lock is poisoned due to a previous panic", $word);
+                let err: SignaledError = $error;
+                let expected_message = err.message;
                 assert!(signaled.$method(signal_id $(, $args),*).is_err_and(|e| e.message == expected_message));
             }
         }
     }
-    test_signaled_poisoned_lock!(test_set_poisoned_lock_error, set, 1; "value");
-    test_signaled_poisoned_lock!(test_try_set_poisoned_lock_error, try_set, 1; "value");
-    test_signaled_poisoned_lock!(test_get_poisoned_lock_error, get; "value");
-    test_signaled_poisoned_lock!(test_try_get_poisoned_lock_error, try_get; "value");
-    test_signaled_poisoned_lock!(test_get_lock_poisoned_lock_error, get_lock; "value");
-    test_signaled_poisoned_lock!(test_try_get_lock_poisoned_lock_error, try_get_lock; "value");
-    test_signaled_poisoned_lock!(test_emit_signals_poisoned_lock_error, emit_signals, &1, &2; "signals");
-    test_signaled_poisoned_lock!(test_try_emit_signals_poisoned_lock_error, try_emit_signals, &1, &2; "signals");
-    test_signaled_poisoned_lock!(test_add_signal_poisoned_lock_error, add_signal, signal_sync!(|_,_| {}); "signals");
-    test_signaled_poisoned_lock!(test_try_add_signal_poisoned_lock_error, try_add_signal, signal_sync!(|_,_| {}); "signals");
-    test_signaled_poisoned_lock!(test_remove_signal_poisoned_lock_error, remove_signal; "signals", true);
-    test_signaled_poisoned_lock!(test_try_remove_signal_poisoned_lock_error, try_remove_signal; "signals", true);
-    test_signaled_poisoned_lock!(test_set_signal_callback_poisoned_lock_error, set_signal_callback, |_, _| {}; "signals", true);
-    test_signaled_poisoned_lock!(test_try_set_signal_callback_poisoned_lock_error, try_set_signal_callback, |_, _| {}; "signals", true);
-    test_signaled_poisoned_lock!(test_set_signal_trigger_poisoned_lock_error, set_signal_trigger, |_, _| true; "signals", true);
-    test_signaled_poisoned_lock!(test_try_set_signal_trigger_poisoned_lock_error, try_set_signal_trigger, |_, _| true; "signals", true);
-    test_signaled_poisoned_lock!(test_remove_signal_trigger_poisoned_lock_error, remove_signal_trigger; "signals", true);
-    test_signaled_poisoned_lock!(test_try_remove_signal_trigger_poisoned_lock_error, try_remove_signal_trigger; "signals", true);
+    test_signaled_poisoned_lock!(test_set_poisoned_lock_error, set, 1; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }));
+    test_signaled_poisoned_lock!(test_try_set_poisoned_lock_error, try_set, 1; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }));
+    test_signaled_poisoned_lock!(test_get_poisoned_lock_error, get; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }));
+    test_signaled_poisoned_lock!(test_try_get_poisoned_lock_error, try_get; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }));
+    test_signaled_poisoned_lock!(test_get_lock_poisoned_lock_error, get_lock; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }));
+    test_signaled_poisoned_lock!(test_try_get_lock_poisoned_lock_error, try_get_lock; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }));
+    test_signaled_poisoned_lock!(test_emit_signals_poisoned_lock_error, emit_signals, &1, &2; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }));
+    test_signaled_poisoned_lock!(test_try_emit_signals_poisoned_lock_error, try_emit_signals, &1, &2; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }));
+    test_signaled_poisoned_lock!(test_add_signal_poisoned_lock_error, add_signal, signal_sync!(|_,_| {}); signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }));
+    test_signaled_poisoned_lock!(test_try_add_signal_poisoned_lock_error, try_add_signal, signal_sync!(|_,_| {}); signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }));
+    test_signaled_poisoned_lock!(test_remove_signal_poisoned_lock_error, remove_signal; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
+    test_signaled_poisoned_lock!(test_try_remove_signal_poisoned_lock_error, try_remove_signal; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
+    test_signaled_poisoned_lock!(test_set_signal_callback_poisoned_lock_error, set_signal_callback, |_, _| {}; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
+    test_signaled_poisoned_lock!(test_try_set_signal_callback_poisoned_lock_error, try_set_signal_callback, |_, _| {}; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
+    test_signaled_poisoned_lock!(test_set_signal_trigger_poisoned_lock_error, set_signal_trigger, |_, _| true; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
+    test_signaled_poisoned_lock!(test_try_set_signal_trigger_poisoned_lock_error, try_set_signal_trigger, |_, _| true; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
+    test_signaled_poisoned_lock!(test_remove_signal_trigger_poisoned_lock_error, remove_signal_trigger; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
+    test_signaled_poisoned_lock!(test_try_remove_signal_trigger_poisoned_lock_error, try_remove_signal_trigger; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
+    test_signaled_poisoned_lock!(test_set_signal_priority_poisoned_lock_error, set_signal_priority, 1; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
+    test_signaled_poisoned_lock!(test_try_set_signal_priority_poisoned_lock_error, try_set_signal_priority, 1; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
+    test_signaled_poisoned_lock!(test_set_signal_once_poisoned_lock_error, set_signal_once, true; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
+    test_signaled_poisoned_lock!(test_try_set_signal_once_poisoned_lock_error, try_set_signal_once, true; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
+    test_signaled_poisoned_lock!(test_set_signal_mute_poisoned_lock_error, set_signal_mute, true; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
+    test_signaled_poisoned_lock!(test_try_set_signal_mute_poisoned_lock_error, try_set_signal_mute, true; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1679,8 +1748,11 @@ mod tests {
     test_invalid_id_error!(test_remove_signal_trigger_invalid_signal_id_error, remove_signal_trigger,);
     test_invalid_id_error!(test_try_remove_signal_trigger_invalid_signal_id_error, try_remove_signal_trigger,);
     test_invalid_id_error!(test_set_signal_priority_invalid_signal_id_error, set_signal_priority, 1);
+    test_invalid_id_error!(test_try_set_signal_priority_invalid_signal_id_error, try_set_signal_priority, 1);
     test_invalid_id_error!(test_set_signal_once_invalid_signal_id_error, set_signal_once, true);
+    test_invalid_id_error!(test_try_set_signal_once_invalid_signal_id_error, try_set_signal_once, true);
     test_invalid_id_error!(test_set_signal_mute_invalid_signal_id_error, set_signal_mute, true);
+    test_invalid_id_error!(test_try_set_signal_mute_invalid_signal_id_error, try_set_signal_mute, true);
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
