@@ -57,14 +57,14 @@
 //! - `InvalidSignalId`: Provided a `Signal` ID that does not exist.
 //!
 //! ```
-//! use signaled::{Signaled, SignaledError, ErrorType, ErrorSource};
+//! use signaled::{Signaled, SignaledError, ErrorSource};
 //!
 //! let signaled = Signaled::new(0);
 //! let _borrow = signaled.get_ref().unwrap();
 //! let result = signaled.set(1);
 //! assert!(matches!(
 //!     result,
-//!     Err(SignaledError { message }) if message == "Cannot mutably borrow Signaled value, it is already borrowed"
+//!     Err(SignaledError::BorrowMutError { source }) if source == ErrorSource::Value
 //! ));
 //! ```
 
@@ -78,69 +78,20 @@ pub mod sync;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// Source of an error in the [`Signaled`] or [`Signal`] structs.
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum ErrorSource {
-    /// Error related to the `val` field of [`Signaled`].
     Value,
-    /// Error related to the [`Signal`] vector of [`Signaled`].
     Signals,
-    /// Error related to a [`Signal`]'s `callback`.
     SignalCallback,
-    /// Error related to a [`Signal`]'s `trigger`.
     SignalTrigger
 }
 
-/// Type of error when manipulating [`Signaled`] or [`Signal`] structs. 
-#[derive(Debug)] 
-pub enum ErrorType {
-    /// Attempted to immutably borrow a [`RefCell`] wrapped field that is already mutably borrowed.
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+pub enum SignaledError {
     BorrowError { source: ErrorSource },
-    /// Attempted to mutably borrow a [`RefCell`] wrapped field that is already borrowed.
     BorrowMutError { source: ErrorSource },
-    /// Provided a `SignalId` that does not match any [`Signal`].
     InvalidSignalId { id: SignalId }
 }
-
-/// Error type returned by [`Signaled`] and [`Signal`] functions.
-/// 
-/// Contains a descriptive message indicating the source and type of the error, such as borrow conflicts or invalid [`Signal`] `id`.
-#[derive(Debug)]
-pub struct SignaledError {
-    /// Descriptive error message.
-    pub message: String
-}
-
-/// Constructs a [`SignaledError`] from an [`ErrorType`].
-/// 
-/// # Arguments
-/// 
-/// * `err_type` - [`ErrorType`] that represents the type of the error and contains a field representing the source of the error.
-pub fn signaled_error(err_type: ErrorType) -> SignaledError {
-    let err_msg = match err_type {
-        ErrorType::BorrowError { source } => {
-            match source {
-                ErrorSource::SignalCallback => "Cannot borrow Signal callback, it is already mutably borrowed".to_string(),
-                ErrorSource::SignalTrigger => "Cannot borrow Signal trigger, it is already mutably borrowed".to_string(),
-                ErrorSource::Value => "Cannot borrow Signaled value, it is already mutably borrowed".to_string(),
-                ErrorSource::Signals => "Cannot borrow Signaled signals, they are already mutably borrowed".to_string()
-            }
-        }
-        ErrorType::BorrowMutError { source } => {
-            match source {
-                ErrorSource::SignalCallback => "Cannot mutably borrow Signal callback, it is already borrowed".to_string(),
-                ErrorSource::SignalTrigger => "Cannot mutably borrow Signal trigger, it is already borrowed".to_string(),
-                ErrorSource::Value => "Cannot mutably borrow Signaled value, it is already borrowed".to_string(),
-                ErrorSource::Signals => "Cannot mutably borrow Signaled signals, they are already borrowed".to_string()
-            }
-        }
-        ErrorType::InvalidSignalId { id } => {
-            format!("Signal ID '{}' does not match any Signal", id)
-        }
-    };
-
-    SignaledError { message: err_msg }
-} 
 
 type SignalId = u64;
 
@@ -245,11 +196,11 @@ impl<T> Signal<T> {
         }
         let trigger = self.trigger
             .try_borrow()
-            .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::SignalTrigger }))?;
+            .map_err(|_| SignaledError::BorrowError { source: ErrorSource::SignalTrigger })?;
         if trigger(old, new) {
             let callback = self.callback
                 .try_borrow()
-                .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::SignalCallback }))?;
+                .map_err(|_| SignaledError::BorrowError { source: ErrorSource::SignalCallback })?;
             callback(old, new);
         }
         Ok(())
@@ -265,7 +216,7 @@ impl<T> Signal<T> {
     /// 
     /// Returns [`SignaledError`] if the callback is already borrowed.
     pub fn set_callback<F: Fn(&T, &T) + 'static>(&self, callback: F) -> Result<(), SignaledError> {
-        *self.callback.try_borrow_mut().map_err(|_| signaled_error(ErrorType::BorrowMutError { source: ErrorSource::SignalCallback }))? = Rc::new(callback);
+        *self.callback.try_borrow_mut().map_err(|_| SignaledError::BorrowMutError { source: ErrorSource::SignalCallback })? = Rc::new(callback);
         Ok(())
     }
 
@@ -281,7 +232,7 @@ impl<T> Signal<T> {
     /// 
     /// Returns [`SignaledError`] if the trigger is already borrowed.
     pub fn set_trigger<F: Fn(&T, &T) -> bool + 'static>(&self, trigger: F) -> Result<(), SignaledError> {
-        *self.trigger.try_borrow_mut().map_err(|_| signaled_error(ErrorType::BorrowMutError { source: ErrorSource::SignalTrigger }))? = Rc::new(trigger);
+        *self.trigger.try_borrow_mut().map_err(|_| SignaledError::BorrowMutError { source: ErrorSource::SignalTrigger })? = Rc::new(trigger);
         Ok(())
     }
 
@@ -291,7 +242,7 @@ impl<T> Signal<T> {
     /// 
     /// Returns [`SignaledError`] if the trigger is already borrowed.
     pub fn remove_trigger(&self) -> Result<(), SignaledError> {
-        *self.trigger.try_borrow_mut().map_err(|_| signaled_error(ErrorType::BorrowMutError { source: ErrorSource::SignalTrigger }))? = Rc::new(|_, _| true);
+        *self.trigger.try_borrow_mut().map_err(|_| SignaledError::BorrowMutError { source: ErrorSource::SignalTrigger })? = Rc::new(|_, _| true);
         Ok(())
     }
 
@@ -441,10 +392,10 @@ impl<T> Signaled<T> {
         let old_value = std::mem::replace(
             &mut *self.val
                     .try_borrow_mut()
-                    .map_err(|_| signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Value }))?,
+                    .map_err(|_| SignaledError::BorrowMutError { source: ErrorSource::Value })?,
             new_value
         );
-        let new_value_ref = self.val.try_borrow().map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }))?;
+        let new_value_ref = self.val.try_borrow().map_err(|_| SignaledError::BorrowError { source: ErrorSource::Value })?;
         self.emit_signals(&old_value, &new_value_ref)
     }
 
@@ -456,7 +407,7 @@ impl<T> Signaled<T> {
     pub fn get_ref(&self) -> Result<Ref<'_, T>, SignaledError> {
         match self.val.try_borrow() {
             Ok(r) => Ok(r),
-            Err(_) => Err(signaled_error(ErrorType::BorrowError { source: ErrorSource::Value })) 
+            Err(_) => Err(SignaledError::BorrowError { source: ErrorSource::Value })
         }
     }
 
@@ -475,7 +426,7 @@ impl<T> Signaled<T> {
                 signals.retain(|s| !s.once.get());
                 Ok(())
             }
-            Err(_) => Err(signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Signals }))
+            Err(_) => Err(SignaledError::BorrowMutError { source: ErrorSource::Signals })
         }
     }
 
@@ -499,7 +450,7 @@ impl<T> Signaled<T> {
                 s.push(signal);
                 Ok(id)
             }
-            Err(_) => Err(signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Signals }))
+            Err(_) => Err(SignaledError::BorrowMutError { source: ErrorSource::Signals })
         }
     }
 
@@ -518,10 +469,10 @@ impl<T> Signaled<T> {
                 let index = s
                     .iter()
                     .position(|s| s.id == id)
-                    .ok_or_else(|| signaled_error(ErrorType::InvalidSignalId { id: id }))?;
+                    .ok_or_else(|| SignaledError::InvalidSignalId { id: id })?;
                 Ok(s.remove(index))
             }
-            Err(_) => Err(signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Signals }))
+            Err(_) => Err(SignaledError::BorrowMutError { source: ErrorSource::Signals })
         }
     }
  
@@ -538,11 +489,11 @@ impl<T> Signaled<T> {
     pub fn set_signal_callback<F: Fn(&T, &T) + 'static>(&self, id: SignalId, callback: F) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
-            .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
+            .map_err(|_| SignaledError::BorrowError { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             return signal.set_callback(callback)
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -557,11 +508,11 @@ impl<T> Signaled<T> {
     ///
     /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] trigger are already borrowed or if the provided [`SignalId`] does not match any [`Signal`].
     pub fn set_signal_trigger<F: Fn(&T, &T) -> bool + 'static>(&self, id: SignalId, trigger: F) -> Result<(), SignaledError> {
-        let signals = self.signals.try_borrow().map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
+        let signals = self.signals.try_borrow().map_err(|_| SignaledError::BorrowError { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             return signal.set_trigger(trigger)
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -575,11 +526,11 @@ impl<T> Signaled<T> {
     /// 
     /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] trigger are already borrowed or if the provided [`SignalId`] does not match any [`Signal`].
     pub fn remove_signal_trigger(&self, id: SignalId) -> Result<(), SignaledError> {
-        let signals = self.signals.try_borrow().map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
+        let signals = self.signals.try_borrow().map_err(|_| SignaledError::BorrowError { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             return signal.remove_trigger()
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -596,12 +547,12 @@ impl<T> Signaled<T> {
     pub fn set_signal_priority(&self, id: SignalId, priority: u64) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
-            .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
+            .map_err(|_| SignaledError::BorrowError { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_priority(priority);
             return Ok(())
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -618,12 +569,12 @@ impl<T> Signaled<T> {
     pub fn set_signal_once(&self, id: SignalId, is_once: bool) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
-            .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
+            .map_err(|_| SignaledError::BorrowError { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_once(is_once);
             return Ok(())
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -640,12 +591,12 @@ impl<T> Signaled<T> {
     pub fn set_signal_mute(&self, id: SignalId, is_mute: bool) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
-            .map_err(|_| signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }))?;
+            .map_err(|_| SignaledError::BorrowError { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_mute(is_mute);
             return Ok(())
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -677,7 +628,7 @@ impl<T: Clone> Signaled<T> {
     pub fn get(&self) -> Result<T, SignaledError> {
         match self.val.try_borrow() {
             Ok(r) => Ok(r.clone()),
-            Err(_) => Err(signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }))
+            Err(_) => Err(SignaledError::BorrowError { source: ErrorSource::Value })
         }
     }
 }
@@ -853,8 +804,7 @@ mod tests {
                 let signaled = Signaled::new(0);
                 let _borrow = signaled.$borrow.$borrow_type();
                 let err: SignaledError = $error;
-                let expected_message = err.message;
-                assert!(signaled.$method($($args),*).is_err_and(|e| e.message == expected_message));
+                assert!(signaled.$method($($args),*).is_err_and(|e| e == err));
             }
         };
         ($test_name:ident, $borrow:ident, $borrow_type:ident, $method:ident $(, $args:expr)*; $error:expr, $use_id:tt) => {
@@ -864,24 +814,23 @@ mod tests {
                 let signal_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
                 let _borrow = signaled.$borrow.$borrow_type();
                 let err: SignaledError = $error;
-                let expected_message = err.message;
-                assert!(signaled.$method(signal_id $(, $args),*).is_err_and(|e| e.message == expected_message));
+                assert!(signaled.$method(signal_id $(, $args),*).is_err_and(|e| e == err));
             }
         };
     }
 
-    test_signaled_borrow_error!(test_set_borrow_error, val, borrow, set, 1; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Value }));
-    test_signaled_borrow_error!(test_get_ref_borrow_error, val, borrow_mut, get_ref; signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }));
-    test_signaled_borrow_error!(test_get_borrow_error, val, borrow_mut, get; signaled_error(ErrorType::BorrowError { source: ErrorSource::Value }));
-    test_signaled_borrow_error!(test_emit_signals_borrow_error, signals, borrow, emit_signals, &1, &2; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Signals }));
-    test_signaled_borrow_error!(test_add_signal_borrow_error, signals, borrow, add_signal, signal!(|_, _| {}); signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Signals }));
-    test_signaled_borrow_error!(test_remove_signal_borrow_error, signals, borrow, remove_signal; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::Signals }), true);
-    test_signaled_borrow_error!(test_set_signal_callback_borrow_error, signals, borrow_mut, set_signal_callback, |_, _| {}; signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }), true);
-    test_signaled_borrow_error!(test_set_signal_trigger_borrow_error, signals, borrow_mut, set_signal_trigger, |_, _| true; signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }), true);
-    test_signaled_borrow_error!(test_remove_signal_trigger_borrow_error, signals, borrow_mut, remove_signal_trigger; signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }), true);
-    test_signaled_borrow_error!(test_set_signal_priority_borrow_error, signals, borrow_mut, set_signal_priority, 1; signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }), true);
-    test_signaled_borrow_error!(test_set_signal_once_borrow_error, signals, borrow_mut, set_signal_once, true; signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }), true);
-    test_signaled_borrow_error!(test_set_signal_mute_borrow_error, signals, borrow_mut, set_signal_mute, true; signaled_error(ErrorType::BorrowError { source: ErrorSource::Signals }), true);
+    test_signaled_borrow_error!(test_set_borrow_error, val, borrow, set, 1; SignaledError::BorrowMutError { source: ErrorSource::Value });
+    test_signaled_borrow_error!(test_get_ref_borrow_error, val, borrow_mut, get_ref; SignaledError::BorrowError { source: ErrorSource::Value });
+    test_signaled_borrow_error!(test_get_borrow_error, val, borrow_mut, get; SignaledError::BorrowError { source: ErrorSource::Value });
+    test_signaled_borrow_error!(test_emit_signals_borrow_error, signals, borrow, emit_signals, &1, &2; SignaledError::BorrowMutError { source: ErrorSource::Signals });
+    test_signaled_borrow_error!(test_add_signal_borrow_error, signals, borrow, add_signal, signal!(|_, _| {}); SignaledError::BorrowMutError { source: ErrorSource::Signals });
+    test_signaled_borrow_error!(test_remove_signal_borrow_error, signals, borrow, remove_signal; SignaledError::BorrowMutError { source: ErrorSource::Signals }, true);
+    test_signaled_borrow_error!(test_set_signal_callback_borrow_error, signals, borrow_mut, set_signal_callback, |_, _| {}; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
+    test_signaled_borrow_error!(test_set_signal_trigger_borrow_error, signals, borrow_mut, set_signal_trigger, |_, _| true; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
+    test_signaled_borrow_error!(test_remove_signal_trigger_borrow_error, signals, borrow_mut, remove_signal_trigger; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
+    test_signaled_borrow_error!(test_set_signal_priority_borrow_error, signals, borrow_mut, set_signal_priority, 1; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
+    test_signaled_borrow_error!(test_set_signal_once_borrow_error, signals, borrow_mut, set_signal_once, true; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
+    test_signaled_borrow_error!(test_set_signal_mute_borrow_error, signals, borrow_mut, set_signal_mute, true; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
 
     macro_rules! test_signal_borrow_error {
         ($test_name:ident, $borrow:ident, $borrow_type:ident, $method:ident $(, $args:expr)*; $error:expr) => {
@@ -890,17 +839,16 @@ mod tests {
                 let signal: Signal<i32> = signal!(|_, _| {});
                 let _borrow = signal.$borrow.$borrow_type();
                 let err = $error;
-                let expected_message = err.message;
-                assert!(signal.$method($($args),*).is_err_and(|e| e.message == expected_message));
+                assert!(signal.$method($($args),*).is_err_and(|e| e == err));
             }
         };
     }
 
-    test_signal_borrow_error!(test_emit_trigger_borrow_error, trigger, borrow_mut, emit, &1, &2; signaled_error(ErrorType::BorrowError { source: ErrorSource::SignalTrigger }));
-    test_signal_borrow_error!(test_emit_callback_borrow_error, callback, borrow_mut, emit, &1, &2; signaled_error(ErrorType::BorrowError { source: ErrorSource::SignalCallback }));
-    test_signal_borrow_error!(test_set_callback_borrow_error, callback, borrow, set_callback, |_, _| {}; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::SignalCallback }));
-    test_signal_borrow_error!(test_set_trigger_borrow_error, trigger, borrow, set_trigger, |_, _| true; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::SignalTrigger }));
-    test_signal_borrow_error!(test_remove_trigger_borrow_error, trigger, borrow, remove_trigger; signaled_error(ErrorType::BorrowMutError { source: ErrorSource::SignalTrigger }));
+    test_signal_borrow_error!(test_emit_trigger_borrow_error, trigger, borrow_mut, emit, &1, &2; SignaledError::BorrowError { source: ErrorSource::SignalTrigger });
+    test_signal_borrow_error!(test_emit_callback_borrow_error, callback, borrow_mut, emit, &1, &2; SignaledError::BorrowError { source: ErrorSource::SignalCallback });
+    test_signal_borrow_error!(test_set_callback_borrow_error, callback, borrow, set_callback, |_, _| {}; SignaledError::BorrowMutError { source: ErrorSource::SignalCallback });
+    test_signal_borrow_error!(test_set_trigger_borrow_error, trigger, borrow, set_trigger, |_, _| true; SignaledError::BorrowMutError { source: ErrorSource::SignalTrigger });
+    test_signal_borrow_error!(test_remove_trigger_borrow_error, trigger, borrow, remove_trigger; SignaledError::BorrowMutError { source: ErrorSource::SignalTrigger });
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -918,7 +866,7 @@ mod tests {
                 let (signaled, invalid_id) = create_signaled_with_invalid_id();
                 assert!(matches!(
                     signaled.$method(invalid_id, $($args),*),
-                    Err(SignaledError { message }) if message == format!("Signal ID '{}' does not match any Signal", invalid_id))
+                    Err(SignaledError::InvalidSignalId { id }) if id == invalid_id)
                 );
             }
         };

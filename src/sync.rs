@@ -72,68 +72,19 @@ use std::sync::{Arc, Mutex, atomic::{AtomicU64, AtomicBool, Ordering}};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// Source of an error in the [`Signaled`] or [`Signal`] structs.
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum ErrorSource {
-    /// Error related to the `val` field of [`Signaled`].
     Value,
-    /// Error related to the [`Signal`] vector of [`Signaled`].
     Signals,
-    /// Error related to a [`Signal`]'s `callback`.
     SignalCallback,
-    /// Error related to a [`Signal`]'s `trigger`.
     SignalTrigger
 }
 
-/// Type of error when manipulating [`Signaled`] or [`Signal`] structs. 
-#[derive(Debug)] 
-pub enum ErrorType {
-    /// Attempted to acquire a poisoned [`Mutex`] or [`RwLock`] lock.
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+pub enum SignaledError {
     PoisonedLock { source: ErrorSource },
-    /// Attempted to acquire a lock that is already held.
     WouldBlock { source: ErrorSource },
-    /// Provided a `SignalId` that does not match any [`Signal`].
     InvalidSignalId { id: SignalId }
-}
-
-/// Error type returned by [`Signaled`] and [`Signal`] functions.
-/// 
-/// Contains a descriptive message indicating the source and type of the error, such as borrow conflicts or invalid [`Signal`] `id`.
-#[derive(Debug)]
-pub struct SignaledError {
-    /// Descriptive error message.
-    pub message: String
-}
-
-/// Constructs a [`SignaledError`] from an [`ErrorType`].
-/// 
-/// # Arguments
-/// 
-/// * `err_type` - [`ErrorType`] that represents the type of the error and contains a field representing the source of the error.
-pub fn signaled_error(err_type: ErrorType) -> SignaledError {
-    let err_msg = match err_type {
-        ErrorType::PoisonedLock { source } => {
-            match source {
-                ErrorSource::SignalCallback => "Cannot access Signal callback: lock is poisoned due to a previous panic".to_string(),
-                ErrorSource::SignalTrigger => "Cannot access Signal trigger: lock is poisoned due to a previous panic".to_string(),
-                ErrorSource::Signals => "Cannot access Signaled signals: lock is poisoned due to a previous panic".to_string(),
-                ErrorSource::Value => "Cannot access Signaled value: lock is poisoned due to a previous panic".to_string()
-            }
-        }
-        ErrorType::WouldBlock { source } => {
-            match source {
-                ErrorSource::SignalCallback => "Cannot access Signal callback: lock is already held elsewhere".to_string(),
-                ErrorSource::SignalTrigger => "Cannot access Signal trigger: lock is already held elsewhere".to_string(),
-                ErrorSource::Signals => "Cannot access Signaled signals: lock is already held elsewhere".to_string(),
-                ErrorSource::Value => "Cannot access Signaled value: lock is already held elsewhere".to_string()
-            }
-        }
-        ErrorType::InvalidSignalId { id } => {
-            format!("Signal ID '{}' does not match any Signal", id)
-        }
-    };
-
-    SignaledError { message: err_msg }
 }
 
 type SignalId = u64;
@@ -247,10 +198,10 @@ impl<T: Send + Sync + 'static> Signal<T> {
             return Ok(())
         }
         let trigger = self.trigger.lock()
-            .map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::SignalTrigger }))?;
+            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })?;
         if trigger(old, new) {
             let callback = self.callback.lock()
-                .map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::SignalCallback }))?;
+                .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalCallback })?;
             callback(old, new);
         }
         Ok(())
@@ -286,16 +237,16 @@ impl<T: Send + Sync + 'static> Signal<T> {
         let trigger = self.trigger.try_lock()
             .map_err(|e| {
                 match e {
-                    TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::SignalTrigger }),
-                    TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalTrigger })
+                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger },
+                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalTrigger }
                 }
             })?;
         if trigger(old, new) {
             let callback = self.callback.try_lock()
                 .map_err(|e| {
                     match e {
-                        TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::SignalCallback }),
-                        TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalCallback })
+                        TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalCallback },
+                        TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalCallback }
                     }
                 })?;
             callback(old, new);
@@ -319,7 +270,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// For a non-blocking alternative, see [`try_set_callback`].
     pub fn set_callback<F: Fn(&T, &T) + Send + Sync + 'static>(&self, callback: F) -> Result<(), SignaledError> {
-        let mut lock = self.callback.lock().map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::SignalCallback }))?;
+        let mut lock = self.callback.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalCallback })?;
         *lock = Box::new(callback);
         Ok(())
     }
@@ -338,8 +289,8 @@ impl<T: Send + Sync + 'static> Signal<T> {
     pub fn try_set_callback<F: Fn(&T, &T) + Send + Sync + 'static>(&self, callback: F) -> Result<(), SignaledError> {
         let mut lock = self.callback.try_lock().map_err(|e| {
             match e {
-                TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::SignalCallback }),
-                TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalCallback })
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalCallback },
+                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalCallback }
             }
         })?;
         *lock = Box::new(callback);
@@ -364,7 +315,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// For a non-blocking alternative, see [`try_set_trigger`]
     pub fn set_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(&self, trigger: F) -> Result<(), SignaledError> {
-        let mut lock = self.trigger.lock().map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::SignalTrigger }))?;
+        let mut lock = self.trigger.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })?;
         *lock = Box::new(trigger);
         Ok(())
     }
@@ -385,8 +336,8 @@ impl<T: Send + Sync + 'static> Signal<T> {
     pub fn try_set_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(&self, trigger: F) -> Result<(), SignaledError> {
         let mut lock = self.trigger.try_lock().map_err(|e| {
             match e {
-                TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::SignalTrigger }),
-                TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalTrigger })
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger },
+                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalTrigger }
             }
         })?;
         *lock = Box::new(trigger);
@@ -405,7 +356,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// For a non-blocking alternative see [`try_remove_trigger`]
     pub fn remove_trigger(&self) -> Result<(), SignaledError> {
-        let mut lock = self.trigger.lock().map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::SignalTrigger }))?;
+        let mut lock = self.trigger.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })?;
         *lock = Box::new(|_, _| true);
         Ok(())
     }
@@ -420,8 +371,8 @@ impl<T: Send + Sync + 'static> Signal<T> {
     pub fn try_remove_trigger(&self) -> Result<(), SignaledError> {
         let mut lock = self.trigger.try_lock().map_err(|e| {
             match e {
-                TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::SignalTrigger }),
-                TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalTrigger })
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger },
+                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalTrigger }
             }
         })?;
         *lock = Box::new(|_, _| true);
@@ -580,7 +531,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     pub fn set(&self, new_value: T) -> Result<(), SignaledError> {
         let mut guard = self.val
             .write()
-            .map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }))?;
+            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Value })?;
         let old_value = std::mem::replace(&mut *guard, new_value);
         self.emit_signals(&old_value, &*guard)
     }
@@ -611,8 +562,8 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             .try_write()
             .map_err(|e| {
                 match e {
-                    TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }),
-                    TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::Value })
+                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Value },
+                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Value }
                 }
             })?;
         let old_value = std::mem::replace(&mut *guard, new_value);
@@ -633,7 +584,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     pub fn get_lock(&self) -> Result<RwLockReadGuard<'_, T>, SignaledError> {
         match self.val.read() {
             Ok(r) => Ok(r),
-            Err(_) => Err(signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value })) 
+            Err(_) => Err(SignaledError::PoisonedLock { source: ErrorSource::Value })
         }
     }
 
@@ -647,8 +598,8 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     pub fn try_get_lock(&self) -> Result<RwLockReadGuard<'_, T>, SignaledError> {
         match self.val.try_read() {
             Ok(r) => Ok(r),
-            Err(TryLockError::WouldBlock) => Err(signaled_error(ErrorType::WouldBlock { source: ErrorSource::Value })),
-            Err(TryLockError::Poisoned(_)) => Err(signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }))
+            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock { source: ErrorSource::Value }),
+            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock { source: ErrorSource::Value })
         }
     }
 
@@ -675,7 +626,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 signals.retain(|s| !s.once.load(Ordering::Relaxed));
                 Ok(())
             }
-            Err(_) => Err(signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }))
+            Err(_) => Err(SignaledError::PoisonedLock { source: ErrorSource::Signals })
         }
     }
 
@@ -698,8 +649,8 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 signals.retain(|s| !s.once.load(Ordering::Relaxed));
                 Ok(())
             }
-            Err(TryLockError::Poisoned(_)) => Err(signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals })),
-            Err(TryLockError::WouldBlock) => Err(signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }))
+            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock { source: ErrorSource::Signals }),
+            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock { source: ErrorSource::Signals })
         }
     }
 
@@ -729,7 +680,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 s.push(signal);
                 Ok(id)
             }
-            Err(_) => Err(signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }))
+            Err(_) => Err(SignaledError::PoisonedLock { source: ErrorSource::Signals })
         }
     }
 
@@ -755,8 +706,8 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 s.push(signal);
                 Ok(id)
             }
-            Err(TryLockError::Poisoned(_)) => Err(signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals })),
-            Err(TryLockError::WouldBlock) => Err(signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }))
+            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock { source: ErrorSource::Signals }),
+            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock { source: ErrorSource::Signals })
         }
     }
 
@@ -781,10 +732,10 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 let index = s
                     .iter()
                     .position(|s| s.id == id)
-                    .ok_or_else(|| signaled_error(ErrorType::InvalidSignalId { id: id }))?;
+                    .ok_or_else(|| SignaledError::InvalidSignalId { id: id })?;
                 Ok(s.remove(index))
             }
-            Err(_) => Err(signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }))
+            Err(_) => Err(SignaledError::PoisonedLock { source: ErrorSource::Signals })
         }
     }
 
@@ -805,11 +756,11 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 let index = s
                     .iter()
                     .position(|s| s.id == id)
-                    .ok_or_else(|| signaled_error(ErrorType::InvalidSignalId { id: id }))?;
+                    .ok_or_else(|| SignaledError::InvalidSignalId { id: id })?;
                 Ok(s.remove(index))
             }
-            Err(TryLockError::Poisoned(_)) => Err(signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals })),
-            Err(TryLockError::WouldBlock) => Err(signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }))
+            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock { source: ErrorSource::Signals }),
+            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock { source: ErrorSource::Signals })
         }
     }
  
@@ -832,11 +783,11 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     pub fn set_signal_callback<F: Fn(&T, &T) + Send + Sync + 'static>(&self, id: SignalId, callback: F) -> Result<(), SignaledError> {
         let signals = self.signals
             .lock()
-            .map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }))?;
+            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             return signal.set_callback(callback)
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -857,14 +808,14 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             .try_lock()
             .map_err(|e| {
                 match e {
-                    TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }),
-                    TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals })
+                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
+                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
                 }
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             return signal.try_set_callback(callback)
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -885,11 +836,11 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// For a non-blocking alternative, see [`try_set_signal_trigger`].
     pub fn set_signal_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(&self, id: SignalId, trigger: F) -> Result<(), SignaledError> {
-        let signals = self.signals.lock().map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }))?;
+        let signals = self.signals.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             return signal.set_trigger(trigger)
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -908,14 +859,14 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     pub fn try_set_signal_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(&self, id: SignalId, trigger: F) -> Result<(), SignaledError> {
         let signals = self.signals.try_lock().map_err(|e| {
             match e {
-                TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }),
-                TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals })       
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
+                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }       
             }
         })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             return signal.try_set_trigger(trigger)
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -935,11 +886,11 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// For a non-blocking alternative, see [`try_remove_signal_trigger`].
     pub fn remove_signal_trigger(&self, id: SignalId) -> Result<(), SignaledError> {
-        let signals = self.signals.lock().map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }))?;
+        let signals = self.signals.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             return signal.remove_trigger()
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -957,14 +908,14 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     pub fn try_remove_signal_trigger(&self, id: SignalId) -> Result<(), SignaledError> {
         let signals = self.signals.try_lock().map_err(|e| {
             match e {
-                TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }),
-                TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals })
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
+                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
             }
         })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             return signal.try_remove_trigger()
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -987,12 +938,12 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     pub fn set_signal_priority(&self, id: SignalId, priority: u64) -> Result<(), SignaledError> {
         let signals = self.signals
             .lock()
-            .map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }))?;
+            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_priority(priority);
             return Ok(())
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -1013,15 +964,15 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             .try_lock()
             .map_err(|e| {
                 match e {
-                    TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }),
-                    TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals })
+                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
+                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
                 }
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_priority(priority);
             return Ok(())
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -1044,12 +995,12 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     pub fn set_signal_once(&self, id: SignalId, is_once: bool) -> Result<(), SignaledError> {
         let signals = self.signals
             .lock()
-            .map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }))?;
+            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_once(is_once);
             return Ok(())
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -1070,15 +1021,15 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             .try_lock()
             .map_err(|e| {
                 match e {
-                    TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }),
-                    TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals })
+                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
+                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
                 }
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_once(is_once);
             return Ok(())
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -1101,12 +1052,12 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     pub fn set_signal_mute(&self, id: SignalId, is_mute: bool) -> Result<(), SignaledError> {
         let signals = self.signals
             .lock()
-            .map_err(|_| signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }))?;
+            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_mute(is_mute);
             return Ok(())
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
     
@@ -1127,15 +1078,15 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             .try_lock()
             .map_err(|e| {
                 match e {
-                    TryLockError::Poisoned(_) => signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }),
-                    TryLockError::WouldBlock => signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals })
+                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
+                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
                 }
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_mute(is_mute);
             return Ok(())
         } else {
-            return Err(signaled_error(ErrorType::InvalidSignalId { id: id }))
+            return Err(SignaledError::InvalidSignalId { id: id })
         }
     }
 
@@ -1174,7 +1125,7 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     pub fn get(&self) -> Result<T, SignaledError> {
         match self.val.read() {
             Ok(r) => Ok(r.clone()),
-            Err(_) => Err(signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }))
+            Err(_) => Err(SignaledError::PoisonedLock { source: ErrorSource::Value })
         }
     }
 
@@ -1188,8 +1139,8 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     pub fn try_get(&self) -> Result<T, SignaledError> {
         match self.val.try_read() {
             Ok(r) => Ok(r.clone()),
-            Err(TryLockError::WouldBlock) => Err(signaled_error(ErrorType::WouldBlock { source: ErrorSource::Value })),
-            Err(TryLockError::Poisoned(_)) => Err(signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }))
+            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock { source: ErrorSource::Value }),
+            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock { source: ErrorSource::Value })
         }
     }
 }
@@ -1581,8 +1532,7 @@ mod tests {
                 let signaled = Signaled::new(0);
                 let _lock = signaled.$lock.$get_lock().unwrap();
                 let err: SignaledError = $error;
-                let expected_message = err.message;
-                assert!(signaled.$method($($args),*).is_err_and(|e| e.message == expected_message));
+                assert!(signaled.$method($($args),*).is_err_and(|e| e == err));
             }
         };
         ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr, $use_id:tt) => { 
@@ -1592,24 +1542,23 @@ mod tests {
                 let signal_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
                 let _lock = signaled.$lock.$get_lock().unwrap();
                 let err: SignaledError = $error;
-                let expected_message = err.message;
-                assert!(signaled.$method(signal_id $(, $args),*).is_err_and(|e| e.message == expected_message));
+                assert!(signaled.$method(signal_id $(, $args),*).is_err_and(|e| e == err));
             }
         };
     }
 
-    test_signaled_would_block_error!(test_try_set_would_block_error, val, read, try_set, 1; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Value }));
-    test_signaled_would_block_error!(test_try_get_would_block_error, val, write, try_get; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Value }));
-    test_signaled_would_block_error!(test_try_get_lock_would_block_error, val, write, try_get_lock; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Value }));
-    test_signaled_would_block_error!(test_try_emit_signals_would_block_error, signals, lock, try_emit_signals, &1, &2; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }));
-    test_signaled_would_block_error!(test_try_add_signal_would_block_error, signals, lock, try_add_signal, signal_sync!(|_, _| {}); signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }));
-    test_signaled_would_block_error!(test_try_remove_signal_would_block_error, signals, lock, try_remove_signal; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }), true);
-    test_signaled_would_block_error!(test_try_set_signal_callback_would_block_error, signals, lock, try_set_signal_callback, |_, _| {}; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }), true);
-    test_signaled_would_block_error!(test_try_set_signal_trigger_would_block_error, signals, lock, try_set_signal_trigger, |_, _| true; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }), true);
-    test_signaled_would_block_error!(test_try_remove_signal_trigger_would_block_error, signals, lock, try_remove_signal_trigger; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }), true);
-    test_signaled_would_block_error!(test_try_set_signal_priority_would_block_error, signals, lock, try_set_signal_priority, 1; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }), true);
-    test_signaled_would_block_error!(test_try_set_signal_once_would_block_error, signals, lock, try_set_signal_once, true; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }), true);
-    test_signaled_would_block_error!(test_try_set_signal_mute_would_block_error, signals, lock, try_set_signal_mute, true; signaled_error(ErrorType::WouldBlock { source: ErrorSource::Signals }), true);
+    test_signaled_would_block_error!(test_try_set_would_block_error, val, read, try_set, 1; SignaledError::WouldBlock { source: ErrorSource::Value });
+    test_signaled_would_block_error!(test_try_get_would_block_error, val, write, try_get; SignaledError::WouldBlock { source: ErrorSource::Value });
+    test_signaled_would_block_error!(test_try_get_lock_would_block_error, val, write, try_get_lock; SignaledError::WouldBlock { source: ErrorSource::Value });
+    test_signaled_would_block_error!(test_try_emit_signals_would_block_error, signals, lock, try_emit_signals, &1, &2; SignaledError::WouldBlock { source: ErrorSource::Signals });
+    test_signaled_would_block_error!(test_try_add_signal_would_block_error, signals, lock, try_add_signal, signal_sync!(|_, _| {}); SignaledError::WouldBlock { source: ErrorSource::Signals });
+    test_signaled_would_block_error!(test_try_remove_signal_would_block_error, signals, lock, try_remove_signal; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
+    test_signaled_would_block_error!(test_try_set_signal_callback_would_block_error, signals, lock, try_set_signal_callback, |_, _| {}; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
+    test_signaled_would_block_error!(test_try_set_signal_trigger_would_block_error, signals, lock, try_set_signal_trigger, |_, _| true; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
+    test_signaled_would_block_error!(test_try_remove_signal_trigger_would_block_error, signals, lock, try_remove_signal_trigger; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
+    test_signaled_would_block_error!(test_try_set_signal_priority_would_block_error, signals, lock, try_set_signal_priority, 1; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
+    test_signaled_would_block_error!(test_try_set_signal_once_would_block_error, signals, lock, try_set_signal_once, true; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
+    test_signaled_would_block_error!(test_try_set_signal_mute_would_block_error, signals, lock, try_set_signal_mute, true; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
 
     macro_rules! test_signal_would_block_error {
         ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr) => {
@@ -1618,17 +1567,16 @@ mod tests {
                 let signal: Signal<i32> = signal_sync!(|_, _| {});
                 let _lock = signal.$lock.$get_lock().unwrap();
                 let err: SignaledError = $error;
-                let expected_message = err.message;
-                assert!(signal.$method($($args),*).is_err_and(|e| e.message == expected_message));
+                assert!(signal.$method($($args),*).is_err_and(|e| e == err));
             }
         };
     }
 
-    test_signal_would_block_error!(test_try_emit_callback_would_block_error, callback, lock, try_emit, &1, &2; signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalCallback }));
-    test_signal_would_block_error!(test_try_emit_trigger_would_block_error, trigger, lock, try_emit, &1, &2; signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalTrigger }));
-    test_signal_would_block_error!(test_try_set_callback_would_block_error, callback, lock, try_set_callback, |_, _| {}; signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalCallback }));
-    test_signal_would_block_error!(test_try_set_trigger_would_block_error, trigger, lock, try_set_trigger, |_, _| true; signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalTrigger }));
-    test_signal_would_block_error!(test_try_remove_trigger_would_block_error, trigger, lock, try_remove_trigger; signaled_error(ErrorType::WouldBlock { source: ErrorSource::SignalTrigger }));
+    test_signal_would_block_error!(test_try_emit_callback_would_block_error, callback, lock, try_emit, &1, &2; SignaledError::WouldBlock { source: ErrorSource::SignalCallback });
+    test_signal_would_block_error!(test_try_emit_trigger_would_block_error, trigger, lock, try_emit, &1, &2; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
+    test_signal_would_block_error!(test_try_set_callback_would_block_error, callback, lock, try_set_callback, |_, _| {}; SignaledError::WouldBlock { source: ErrorSource::SignalCallback });
+    test_signal_would_block_error!(test_try_set_trigger_would_block_error, trigger, lock, try_set_trigger, |_, _| true; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
+    test_signal_would_block_error!(test_try_remove_trigger_would_block_error, trigger, lock, try_remove_trigger; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1650,8 +1598,7 @@ mod tests {
             fn $test_name() {
                 let (signaled, _) = create_poisoned_signaled();
                 let err: SignaledError = $error;
-                let expected_message = err.message;
-                assert!(signaled.$method($($args),*).is_err_and(|e| e.message == expected_message));
+                assert!(signaled.$method($($args),*).is_err_and(|e| e == err));
             }
         };
         ($test_name:ident, $method:ident $(, $args:expr)*; $error:expr, $use_id:tt) => {
@@ -1659,40 +1606,39 @@ mod tests {
             fn $test_name() {
                 let (signaled, signal_id) = create_poisoned_signaled();
                 let err: SignaledError = $error;
-                let expected_message = err.message;
-                assert!(signaled.$method(signal_id $(, $args),*).is_err_and(|e| e.message == expected_message));
+                assert!(signaled.$method(signal_id $(, $args),*).is_err_and(|e| e == err));
             }
         }
     }
-    test_signaled_poisoned_lock!(test_set_poisoned_lock_error, set, 1; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }));
-    test_signaled_poisoned_lock!(test_try_set_poisoned_lock_error, try_set, 1; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }));
-    test_signaled_poisoned_lock!(test_get_poisoned_lock_error, get; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }));
-    test_signaled_poisoned_lock!(test_try_get_poisoned_lock_error, try_get; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }));
-    test_signaled_poisoned_lock!(test_get_lock_poisoned_lock_error, get_lock; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }));
-    test_signaled_poisoned_lock!(test_try_get_lock_poisoned_lock_error, try_get_lock; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Value }));
-    test_signaled_poisoned_lock!(test_emit_signals_poisoned_lock_error, emit_signals, &1, &2; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }));
-    test_signaled_poisoned_lock!(test_try_emit_signals_poisoned_lock_error, try_emit_signals, &1, &2; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }));
-    test_signaled_poisoned_lock!(test_add_signal_poisoned_lock_error, add_signal, signal_sync!(|_,_| {}); signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }));
-    test_signaled_poisoned_lock!(test_try_add_signal_poisoned_lock_error, try_add_signal, signal_sync!(|_,_| {}); signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }));
-    test_signaled_poisoned_lock!(test_remove_signal_poisoned_lock_error, remove_signal; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
-    test_signaled_poisoned_lock!(test_try_remove_signal_poisoned_lock_error, try_remove_signal; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
-    test_signaled_poisoned_lock!(test_set_signal_callback_poisoned_lock_error, set_signal_callback, |_, _| {}; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
-    test_signaled_poisoned_lock!(test_try_set_signal_callback_poisoned_lock_error, try_set_signal_callback, |_, _| {}; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
-    test_signaled_poisoned_lock!(test_set_signal_trigger_poisoned_lock_error, set_signal_trigger, |_, _| true; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
-    test_signaled_poisoned_lock!(test_try_set_signal_trigger_poisoned_lock_error, try_set_signal_trigger, |_, _| true; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
-    test_signaled_poisoned_lock!(test_remove_signal_trigger_poisoned_lock_error, remove_signal_trigger; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
-    test_signaled_poisoned_lock!(test_try_remove_signal_trigger_poisoned_lock_error, try_remove_signal_trigger; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
-    test_signaled_poisoned_lock!(test_set_signal_priority_poisoned_lock_error, set_signal_priority, 1; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
-    test_signaled_poisoned_lock!(test_try_set_signal_priority_poisoned_lock_error, try_set_signal_priority, 1; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
-    test_signaled_poisoned_lock!(test_set_signal_once_poisoned_lock_error, set_signal_once, true; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
-    test_signaled_poisoned_lock!(test_try_set_signal_once_poisoned_lock_error, try_set_signal_once, true; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
-    test_signaled_poisoned_lock!(test_set_signal_mute_poisoned_lock_error, set_signal_mute, true; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
-    test_signaled_poisoned_lock!(test_try_set_signal_mute_poisoned_lock_error, try_set_signal_mute, true; signaled_error(ErrorType::PoisonedLock { source: ErrorSource::Signals }), true);
+    test_signaled_poisoned_lock!(test_set_poisoned_lock_error, set, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_try_set_poisoned_lock_error, try_set, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_get_poisoned_lock_error, get; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_try_get_poisoned_lock_error, try_get; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_get_lock_poisoned_lock_error, get_lock; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_try_get_lock_poisoned_lock_error, try_get_lock; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_emit_signals_poisoned_lock_error, emit_signals, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::Signals });
+    test_signaled_poisoned_lock!(test_try_emit_signals_poisoned_lock_error, try_emit_signals, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::Signals });
+    test_signaled_poisoned_lock!(test_add_signal_poisoned_lock_error, add_signal, signal_sync!(|_,_| {}); SignaledError::PoisonedLock { source: ErrorSource::Signals });
+    test_signaled_poisoned_lock!(test_try_add_signal_poisoned_lock_error, try_add_signal, signal_sync!(|_,_| {}); SignaledError::PoisonedLock { source: ErrorSource::Signals });
+    test_signaled_poisoned_lock!(test_remove_signal_poisoned_lock_error, remove_signal; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_try_remove_signal_poisoned_lock_error, try_remove_signal; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_set_signal_callback_poisoned_lock_error, set_signal_callback, |_, _| {}; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_try_set_signal_callback_poisoned_lock_error, try_set_signal_callback, |_, _| {}; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_set_signal_trigger_poisoned_lock_error, set_signal_trigger, |_, _| true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_try_set_signal_trigger_poisoned_lock_error, try_set_signal_trigger, |_, _| true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_remove_signal_trigger_poisoned_lock_error, remove_signal_trigger; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_try_remove_signal_trigger_poisoned_lock_error, try_remove_signal_trigger; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_set_signal_priority_poisoned_lock_error, set_signal_priority, 1; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_try_set_signal_priority_poisoned_lock_error, try_set_signal_priority, 1; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_set_signal_once_poisoned_lock_error, set_signal_once, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_try_set_signal_once_poisoned_lock_error, try_set_signal_once, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_set_signal_mute_poisoned_lock_error, set_signal_mute, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_try_set_signal_mute_poisoned_lock_error, try_set_signal_mute, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     macro_rules! test_signal_poisoned_lock {
-        ($test_name:ident, $lock:ident, $method:ident $(, $args:expr)*; $word:expr) => {
+        ($test_name:ident, $lock:ident, $method:ident $(, $args:expr)*; $error:expr) => {
             #[test]
             fn $test_name() {
                 let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
@@ -1702,21 +1648,21 @@ mod tests {
                     panic!();
                 });
                 assert!(result.is_err());
-                let expected_message = format!("Cannot access Signal {}: lock is poisoned due to a previous panic", $word);
-                assert!(signal.$method($($args),*).is_err_and(|e| e.message == expected_message));
+                let err: SignaledError = $error;
+                assert!(signal.$method($($args),*).is_err_and(|e| e == err));
             }
         };
     }
-    test_signal_poisoned_lock!(test_emit_poisoned_callback_lock_error, callback, emit, &1, &2; "callback");
-    test_signal_poisoned_lock!(test_emit_poisoned_trigger_lock_error, trigger, emit, &1, &2; "trigger");
-    test_signal_poisoned_lock!(test_try_emit_poisoned_callback_lock_error, callback, try_emit, &1, &2; "callback");
-    test_signal_poisoned_lock!(test_try_emit_poisoned_trigger_lock_error, trigger, try_emit, &1, &2; "trigger");
-    test_signal_poisoned_lock!(test_set_callback_poisoned_lock_error, callback, set_callback, |_, _| {}; "callback");
-    test_signal_poisoned_lock!(test_try_set_callback_poisoned_lock_error, callback, try_set_callback, |_, _| {}; "callback");
-    test_signal_poisoned_lock!(test_set_trigger_poisoned_lock_error, trigger, set_trigger, |_, _| true; "trigger");
-    test_signal_poisoned_lock!(test_try_set_trigger_poisoned_lock_error, trigger, try_set_trigger, |_, _| true; "trigger");
-    test_signal_poisoned_lock!(test_remove_trigger_poisoned_lock_error, trigger, remove_trigger; "trigger");
-    test_signal_poisoned_lock!(test_try_remove_trigger_poisoned_lock_error, trigger, try_remove_trigger; "trigger");
+    test_signal_poisoned_lock!(test_emit_poisoned_callback_lock_error, callback, emit, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::SignalCallback });
+    test_signal_poisoned_lock!(test_emit_poisoned_trigger_lock_error, trigger, emit, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
+    test_signal_poisoned_lock!(test_try_emit_poisoned_callback_lock_error, callback, try_emit, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::SignalCallback });
+    test_signal_poisoned_lock!(test_try_emit_poisoned_trigger_lock_error, trigger, try_emit, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
+    test_signal_poisoned_lock!(test_set_callback_poisoned_lock_error, callback, set_callback, |_, _| {}; SignaledError::PoisonedLock { source: ErrorSource::SignalCallback });
+    test_signal_poisoned_lock!(test_try_set_callback_poisoned_lock_error, callback, try_set_callback, |_, _| {}; SignaledError::PoisonedLock { source: ErrorSource::SignalCallback });
+    test_signal_poisoned_lock!(test_set_trigger_poisoned_lock_error, trigger, set_trigger, |_, _| true; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
+    test_signal_poisoned_lock!(test_try_set_trigger_poisoned_lock_error, trigger, try_set_trigger, |_, _| true; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
+    test_signal_poisoned_lock!(test_remove_trigger_poisoned_lock_error, trigger, remove_trigger; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
+    test_signal_poisoned_lock!(test_try_remove_trigger_poisoned_lock_error, trigger, try_remove_trigger; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1734,7 +1680,7 @@ mod tests {
                 let (signaled, invalid_id) = create_signaled_with_invalid_id();
                 assert!(matches!(
                     signaled.$method(invalid_id, $($args),*),
-                    Err(SignaledError { message }) if message == format!("Signal ID '{}' does not match any Signal", invalid_id))
+                    Err(SignaledError::InvalidSignalId { id }) if id == invalid_id)
                 );
             }
         };
