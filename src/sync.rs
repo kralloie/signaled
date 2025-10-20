@@ -55,10 +55,24 @@
 //! - `InvalidSignalId`: Provided a `Signal` ID that does not exist.
 //! - `WouldBlock`: Attempted to acquire a lock that is held elsewhere.
 //! 
+//! ```
+//! use signaled::sync::{SignaledError, ErrorSource, Signaled};
+//!
+//! let signaled = Signaled::new(0);
+//! let read_lock = signaled.get_lock().unwrap();
+//! let result = signaled.try_set(1);
+//! assert!(matches!(
+//!     result,
+//!     Err(SignaledError::WouldBlock { source }) if source == ErrorSource::Value
+//! ));
+//! ```
+//! 
 //! ## Deadlock risk
 //!
+//! The wrong usage of functions like `set`, `emit_signals` and similar functions that acquire locks for `Signaled` and `Signal` properties, may lead to a deadlock.
+//! 
 //! ```
-//! use signaled::sync::{SignaledError, Signaled};
+//! use signaled::sync::{SignaledError, ErrorSource, Signaled};
 //!
 //! let signaled = Signaled::new(0);
 //! let read_lock = signaled.get_lock().unwrap();

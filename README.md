@@ -67,13 +67,12 @@ Methods like `set`, `emit`, and `remove_signal` return `Result` with `SignaledEr
 - `InvalidSignalId`: Provided a `Signal` ID that does not exist.
 
 ```rust
-use signaled::{Signaled, SignaledError, ErrorType, ErrorSource};
-
+use signaled::{Signaled, SignaledError, ErrorSource};
 let signaled = Signaled::new(0);
 let _borrow = signaled.get_ref().unwrap();
 let result = signaled.set(1);
 assert!(matches!(
     result,
-    Err(SignaledError { message }) if message == "Cannot mutably borrow Signaled value, it is already borrowed"
+    Err(SignaledError::BorrowMutError { source }) if source == ErrorSource::Value
 ));
 ```
