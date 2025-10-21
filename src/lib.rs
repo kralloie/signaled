@@ -178,7 +178,7 @@ impl<T> Signal<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the callback or trigger are already borrowed.
+    /// Returns [`SignaledError::BorrowError`] if the callback or trigger are already mutably borrowed.
     ///
     /// # Examples
     ///
@@ -214,7 +214,7 @@ impl<T> Signal<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the callback is already borrowed.
+    /// Returns [`SignaledError::BorrowMutError`] if the callback is already borrowed.
     pub fn set_callback<F: Fn(&T, &T) + 'static>(&self, callback: F) -> Result<(), SignaledError> {
         *self.callback.try_borrow_mut().map_err(|_| SignaledError::BorrowMutError { source: ErrorSource::SignalCallback })? = Rc::new(callback);
         Ok(())
@@ -230,17 +230,17 @@ impl<T> Signal<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the trigger is already borrowed.
+    /// Returns [`SignaledError::BorrowMutError`] if the trigger is already borrowed.
     pub fn set_trigger<F: Fn(&T, &T) -> bool + 'static>(&self, trigger: F) -> Result<(), SignaledError> {
         *self.trigger.try_borrow_mut().map_err(|_| SignaledError::BorrowMutError { source: ErrorSource::SignalTrigger })? = Rc::new(trigger);
         Ok(())
     }
 
-    /// Removes the [`Signal`] trigger condition.
+    /// Sets the [`Signal`] `trigger` to always return true.
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the trigger is already borrowed.
+    /// Returns [`SignaledError::BorrowMutError`] if the trigger is already borrowed.
     pub fn remove_trigger(&self) -> Result<(), SignaledError> {
         *self.trigger.try_borrow_mut().map_err(|_| SignaledError::BorrowMutError { source: ErrorSource::SignalTrigger })? = Rc::new(|_, _| true);
         Ok(())
@@ -377,7 +377,11 @@ impl<T> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if `val` or `signals` are already borrowed.
+    /// Returns [`SignaledError::BorrowMutError`] if `val` is already borrowed.
+    /// 
+    /// Returns [`SignaledError::BorrowMutError`] if `signals` is already borrowed.
+    /// 
+    /// Returns [`SignaledError::BorrowError`] propagated from `signal.emit()` if an individual [`Signal`] callback or trigger is already mutably borrowed.
     ///
     /// # Examples
     ///
@@ -403,7 +407,7 @@ impl<T> Signaled<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if `val` is mutably borrowed.
+    /// Returns [`SignaledError::BorrowError`] if `val` is mutably borrowed.
     pub fn get_ref(&self) -> Result<Ref<'_, T>, SignaledError> {
         match self.val.try_borrow() {
             Ok(r) => Ok(r),
@@ -415,7 +419,9 @@ impl<T> Signaled<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if any of the [`Signal`]s is already borrowed.
+    /// Returns [`SignaledError::BorrowMutError`] if `signals` is already borrowed.
+    /// 
+    /// Returns [`SignaledError::BorrowError`] propagated from `signal.emit()` if an individual [`Signal`] callback or trigger is already mutably borrowed.
     fn emit_signals(&self, old: &T, new: &T) -> Result<(), SignaledError> {
         match self.signals.try_borrow_mut() {
             Ok(mut signals) => {
@@ -439,7 +445,7 @@ impl<T> Signaled<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the [`Signal`] collection is already borrowed.
+    /// Returns [`SignaledError::BorrowMutError`] if the `signals` is already borrowed.
     pub fn add_signal(&self, signal: Signal<T>) -> Result<SignalId, SignaledError> {
         match self.signals.try_borrow_mut() {
             Ok(mut s) => {
@@ -462,7 +468,9 @@ impl<T> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection is already borrowed or the `id` is invalid.
+    /// Returns [`SignaledError::BorrowMutError`] if the `signals` is already borrowed.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if `id` does not match any [`Signal`].
     pub fn remove_signal(&self, id: SignalId) -> Result<Signal<T>, SignaledError> {
         match self.signals.try_borrow_mut() {
             Ok(mut s) => {
@@ -485,7 +493,11 @@ impl<T> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] callback are already borrowed or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::BorrowError`] if the `signals` is already mutably borrowed.
+    ///
+    /// Returns [`SignaledError::InvalidSignalId`] if `id` does not match any [`Signal`].
+    /// 
+    /// Returns [`SignaledError::BorrowMutError`] if the targeted [`Signal`] `callback` is already borrowed.
     pub fn set_signal_callback<F: Fn(&T, &T) + 'static>(&self, id: SignalId, callback: F) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
@@ -506,7 +518,11 @@ impl<T> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] trigger are already borrowed or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::BorrowError`] if the `signals` is already mutably borrowed.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if `id` does not match any [`Signal`].
+    /// 
+    /// Returns [`SignaledError::BorrowMutError`] if the targeted [`Signal`] `trigger` is already borrowed.
     pub fn set_signal_trigger<F: Fn(&T, &T) -> bool + 'static>(&self, id: SignalId, trigger: F) -> Result<(), SignaledError> {
         let signals = self.signals.try_borrow().map_err(|_| SignaledError::BorrowError { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
@@ -516,7 +532,7 @@ impl<T> Signaled<T> {
         }
     }
 
-    /// Removes the trigger condition for a [`Signal`] by `id`.
+    /// Sets the [`Signal`] `trigger` to always return true by `id`.
     /// 
     /// # Arguments
     /// 
@@ -524,7 +540,11 @@ impl<T> Signaled<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] trigger are already borrowed or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::BorrowError`] if the `signals` is already mutably borrowed.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if `id` does not match any [`Signal`].
+    /// 
+    /// Returns [`SignaledError::BorrowMutError`] if the targeted [`Signal`] `trigger` is already borrowed.
     pub fn remove_signal_trigger(&self, id: SignalId) -> Result<(), SignaledError> {
         let signals = self.signals.try_borrow().map_err(|_| SignaledError::BorrowError { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
@@ -543,7 +563,9 @@ impl<T> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection is already mutably borrowed or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::BorrowError`] if the `signals` is already mutably borrowed.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if `id` does not match any [`Signal`].
     pub fn set_signal_priority(&self, id: SignalId, priority: u64) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
@@ -565,7 +587,9 @@ impl<T> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection is already mutably borrowed or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::BorrowError`] if the `signals` is already mutably borrowed.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if `id` does not match any [`Signal`].
     pub fn set_signal_once(&self, id: SignalId, is_once: bool) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
@@ -587,7 +611,9 @@ impl<T> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection is already mutably borrowed or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::BorrowError`] if the `signals` is already mutably borrowed.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if `id` does not match any [`Signal`].
     pub fn set_signal_mute(&self, id: SignalId, is_mute: bool) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_borrow()
@@ -624,7 +650,7 @@ impl<T: Clone> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if `val` is already mutably borrowed.
+    /// Returns [`SignaledError::BorrowError`] if `val` is already mutably borrowed.
     pub fn get(&self) -> Result<T, SignaledError> {
         match self.val.try_borrow() {
             Ok(r) => Ok(r.clone()),

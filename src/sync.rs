@@ -192,7 +192,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the `callback` or `trigger` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the `callback` or `trigger` locks are poisoned.
     ///
     /// # Examples
     ///
@@ -234,8 +234,10 @@ impl<T: Send + Sync + 'static> Signal<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the `callback` or `trigger` locks are poisoned or held elsewhere.
-    ///
+    /// Returns [`SignaledError::PoisonedLock`] if the `callback` or `trigger` locks are poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `callback` or `trigger` locks are held elsewhere.
+    /// 
     /// # Examples
     ///
     /// ```
@@ -278,7 +280,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the `callback` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the `callback` lock is poisoned.
     ///     
     /// # Warnings
     /// 
@@ -301,7 +303,9 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the `callback` lock is poisoned or held elsewhere.
+    /// Returns [`SignaledError::PoisonedLock`] if the `callback` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `callback` lock is held elsewhere.
     pub fn try_set_callback<F: Fn(&T, &T) + Send + Sync + 'static>(&self, callback: F) -> Result<(), SignaledError> {
         let mut lock = self.callback.try_lock().map_err(|e| {
             match e {
@@ -323,7 +327,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the `trigger` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the `trigger` lock is poisoned.
     /// 
     /// # Warnings
     /// 
@@ -348,7 +352,9 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the `trigger` lock is poisoned or held elsewhere.
+    /// Returns [`SignaledError::PoisonedLock`] if the `trigger` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `trigger` lock is held elsewhere.
     pub fn try_set_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(&self, trigger: F) -> Result<(), SignaledError> {
         let mut lock = self.trigger.try_lock().map_err(|e| {
             match e {
@@ -360,11 +366,11 @@ impl<T: Send + Sync + 'static> Signal<T> {
         Ok(())
     }
 
-    /// Removes the [`Signal`] trigger condition.
+    /// Sets the [`Signal`] `trigger` to always return true.
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the `trigger` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the `trigger` lock is poisoned.
     /// 
     /// # Warnings
     /// 
@@ -377,13 +383,15 @@ impl<T: Send + Sync + 'static> Signal<T> {
         Ok(())
     }
 
-    /// Removes the [`Signal`] trigger condition.
+    /// Sets the [`Signal`] `trigger` to always return true.
     /// 
     /// This function unlike [`remove_trigger`], is non-blocking so there are no re-entrant calls that block until the `trigger` lock can be acquired.
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the `trigger` lock is poisoned or held elsewhere.
+    /// Returns [`SignaledError::PoisonedLock`] if the `trigger` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `trigger` lock is held elsewhere.
     pub fn try_remove_trigger(&self) -> Result<(), SignaledError> {
         let mut lock = self.trigger.try_lock().map_err(|e| {
             match e {
@@ -527,7 +535,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if `val` or `signals` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if `val`, `signals` or [`Signal`]s inside `signals` locks are poisoned.
     ///
     /// # Examples
     ///
@@ -562,7 +570,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if `val` or `signals` locks are poisoned or held elsewhere.
+    /// Returns [`SignaledError::PoisonedLock`] if `val`, `signals` or [`Signal`]s inside `signals` locks are poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if `val`, `signals` or [`Signal`]s inside `signals` locks are held elsewhere.
     ///
     /// # Examples
     ///
@@ -590,7 +600,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if `val` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
     /// 
     /// # Warnings
     /// 
@@ -610,7 +620,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if `val` lock is poisoned or held elsewhere.
+    /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if `val` lock is held elsewhere.
     pub fn try_get_lock(&self) -> Result<RwLockReadGuard<'_, T>, SignaledError> {
         match self.val.try_read() {
             Ok(r) => Ok(r),
@@ -623,7 +635,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the [`Signal`] collection lock or [`Signal`]s inside `signals` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock or [`Signal`]s inside `signals` locks are poisoned.
     /// 
     /// # Warnings
     /// 
@@ -652,7 +664,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the [`Signal`] collection lock or [`Signal`]s inside `signals` locks are poisoned or held elsewhere.
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock or [`Signal`]s inside `signals` locks are poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `signals` lock or [`Signal`]s inside `signals` locks are held elsewhere.
     fn try_emit_signals(&self, old: &T, new: &T) -> Result<(), SignaledError> {
         match self.signals.try_lock() {
             Ok(mut signals) => {
@@ -679,7 +693,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
     /// 
     /// # Warnings
     /// 
@@ -711,7 +725,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or held elsewhere.
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere.
     pub fn try_add_signal(&self, signal: Signal<T>) -> Result<SignalId, SignaledError> {
         match self.signals.try_lock() {
             Ok(mut s) => {
@@ -735,7 +751,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or if the `id` is invalid.
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     /// 
     /// # Warnings 
     /// 
@@ -765,7 +783,11 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or held elsewhere, or if the `id` is invalid.
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     pub fn try_remove_signal(&self, id: SignalId) -> Result<Signal<T>, SignaledError> {
         match self.signals.try_lock() {
             Ok(mut s) => {
@@ -789,7 +811,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] callback locks are poisoned or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `callback` locks are poisoned.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     /// 
     /// # Warnings
     /// 
@@ -818,7 +842,11 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] callback locks are poisoned or held elsewhere, or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `callback` locks are poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `signals` or the targeted [`Signal`] callback are held elsewhere.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     pub fn try_set_signal_callback<F: Fn(&T, &T) + Send + Sync + 'static>(&self, id: SignalId, callback: F) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_lock()
@@ -844,7 +872,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] trigger locks are poisoned or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `trigger` locks are poisoned.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     /// 
     /// # Warnings
     /// 
@@ -871,7 +901,11 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] trigger locks are poisoned or held elsewhere, or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `trigger` locks are poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `signals` or the targeted [`Signal`] `trigger` locks are held elsewhere.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     pub fn try_set_signal_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(&self, id: SignalId, trigger: F) -> Result<(), SignaledError> {
         let signals = self.signals.try_lock().map_err(|e| {
             match e {
@@ -886,7 +920,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Removes the trigger condition for a [`Signal`] by `id`.
+    /// Sets the [`Signal`] `trigger` to always return true by `id`
     /// 
     /// # Arguments
     /// 
@@ -894,7 +928,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] trigger locks are poisoned or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `trigger` locks are poisoned.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     /// 
     /// # Warnings
     /// 
@@ -910,7 +946,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Removes the trigger condition for a [`Signal`] by `id`.
+    /// Sets the [`Signal`] `trigger` to always return true by `id`
     /// 
     /// This function unlike [`remove_signal_trigger`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
     /// 
@@ -920,7 +956,11 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if the [`Signal`] collection or [`Signal`] trigger locks are poisoned or held elsewhere, or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `trigger` locks are poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `signals` or the targeted [`Signal`] `trigger` locks are held elsewhere.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     pub fn try_remove_signal_trigger(&self, id: SignalId) -> Result<(), SignaledError> {
         let signals = self.signals.try_lock().map_err(|e| {
             match e {
@@ -944,7 +984,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     /// 
     /// # Warnings
     /// 
@@ -974,7 +1016,11 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or held elsewhere, or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     pub fn try_set_signal_priority(&self, id: SignalId, priority: u64) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_lock()
@@ -1001,7 +1047,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     ///     
     /// # Warnings
     /// 
@@ -1031,7 +1079,11 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or held elsewhere, or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     pub fn try_set_signal_once(&self, id: SignalId, is_once: bool) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_lock()
@@ -1058,7 +1110,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     /// 
     /// # Warnings
     /// 
@@ -1088,7 +1142,11 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if the [`Signal`] collection lock is poisoned or held elsewhere, or if the provided [`SignalId`] does not match any [`Signal`].
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     pub fn try_set_signal_mute(&self, id: SignalId, is_mute: bool) -> Result<(), SignaledError> {
         let signals = self.signals
             .try_lock()
@@ -1137,7 +1195,7 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if `val` or `signals` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if `val` or `signals` locks are poisoned.
     ///
     /// # Examples
     ///
@@ -1191,7 +1249,9 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if `val` or `signals` locks are poisoned or if the `val` or `signals` locks are held elsewhere.
+    /// Returns [`SignaledError::PoisonedLock`] if `val` or `signals` locks are poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if `val` or `signals` locks are held elsewhere.
     ///
     /// # Examples
     ///
@@ -1240,7 +1300,7 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError`] if `val` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
     /// 
     /// # Warnings
     /// 
@@ -1260,7 +1320,9 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     /// 
     /// # Errors
     /// 
-    /// Returns [`SignaledError`] if `val` lock is poisoned or held elsewhere.
+    /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if `val` lock is held elsewhere.
     pub fn try_get(&self) -> Result<T, SignaledError> {
         match self.val.try_read() {
             Ok(r) => Ok(r.clone()),
