@@ -83,6 +83,8 @@
 use std::fmt::{Display};
 use std::sync::{RwLock, RwLockReadGuard, TryLockError};
 use std::sync::{Arc, Mutex, atomic::{AtomicU64, AtomicBool, Ordering}};
+use std::thread;
+use std::thread::{JoinHandle};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -547,7 +549,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             .write()
             .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Value })?;
         let old_value = std::mem::replace(&mut *guard, new_value);
-        self.emit_signals(&old_value, &*guard)
+        self.emit_signals(&old_value, &guard)
     }
 
     /// Sets a new value for `val` and emits all [`Signal`]s.
@@ -1125,6 +1127,115 @@ impl<T: Display + Send + Sync + 'static> Display for Signaled<T> {
 
 
 impl<T: Clone + Send + Sync + 'static> Signaled<T> {
+    /// Sets a new value for `val` and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread.
+    /// 
+    /// The returned [`JoinHandle`] will contain a [`SignaledError`] if any [`Signal`] emission failed.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_value` - The new value of the [`Signaled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError`] if `val` or `signals` locks are poisoned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use signaled::{signal_sync, sync::{Signaled, Signal}};
+    ///
+    /// let signaled = Signaled::new(0);
+    /// signaled.add_signal(signal_sync!(|old, new| println!("Old: {} | New: {}", old, new)));
+    /// let handle = signaled.set_and_spawn(1).unwrap();
+    /// handle.join();
+    /// ```
+    /// 
+    /// # Warnings
+    /// 
+    /// This function may result in a deadlock if used incorrectly.
+    /// 
+    /// For a non-blocking alternative, see [`try_set_and_spawn`].
+    pub fn set_and_spawn(&self, new_value: T) -> Result<JoinHandle<Result<(), SignaledError>>, SignaledError> {
+        let mut guard = self.val
+            .write()
+            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Value })?;
+        let old_value = std::mem::replace(&mut *guard, new_value);
+        let new_value_clone = (*guard).clone();
+        drop(guard);
+
+        let signals_clone = Arc::clone(&self.signals);
+        let handle = thread::spawn(move || -> Result<(), SignaledError> {
+            let mut signals = signals_clone.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
+            signals.sort_by(|a, b| { 
+                b.priority.load(Ordering::Relaxed).cmp(&a.priority.load(Ordering::Relaxed))
+            });
+            for signal in signals.iter() {
+                signal.emit(&old_value, &new_value_clone)?;
+            }
+            signals.retain(|s| !s.once.load(Ordering::Relaxed));
+            Ok(())
+        });
+        Ok(handle)
+    }
+
+
+    /// Sets a new value for `val` and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread.
+    /// 
+    /// The returned [`JoinHandle`] will contain a [`SignaledError`] if any [`Signal`] emission failed.
+    /// 
+    /// This function unlike [`set_and_spawn`], is non-blocking so there are no re-entrant calls that block until `val` or `signals` lock can be acquired.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_value` - The new value of the [`Signaled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError`] if `val` or `signals` locks are poisoned or if the `val` or `signals` locks are held elsewhere.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use signaled::{signal_sync, sync::{Signaled, Signal}};
+    ///
+    /// let signaled = Signaled::new(0);
+    /// signaled.add_signal(signal_sync!(|old, new| println!("Old: {} | New: {}", old, new)));
+    /// let handle = signaled.try_set_and_spawn(1).unwrap();
+    /// handle.join();
+    /// ```
+    pub fn try_set_and_spawn(&self, new_value: T) -> Result<JoinHandle<Result<(), SignaledError>>, SignaledError> {
+        let mut guard = self.val
+            .try_write()
+            .map_err(|e| {
+                match e {
+                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Value },
+                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Value }
+                }
+            })?;
+        let old_value = std::mem::replace(&mut *guard, new_value);
+        let new_value_clone = (*guard).clone();
+        drop(guard);
+
+        let signals_clone = Arc::clone(&self.signals);
+        let handle = thread::spawn(move || -> Result<(), SignaledError> {
+            let mut signals = signals_clone.try_lock().map_err(|e| {
+                match e {
+                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
+                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
+                }
+            })?;
+            signals.sort_by(|a, b| { 
+                b.priority.load(Ordering::Relaxed).cmp(&a.priority.load(Ordering::Relaxed))
+            });
+            for signal in signals.iter() {
+                signal.try_emit(&old_value, &new_value_clone)?;
+            }
+            signals.retain(|s| !s.once.load(Ordering::Relaxed));
+            Ok(())
+        });
+        Ok(handle)
+    }
+
     /// Returns a cloned copy of the current value.
     ///
     /// # Errors
@@ -1562,6 +1673,7 @@ mod tests {
     }
 
     test_signaled_would_block_error!(test_try_set_would_block_error, val, read, try_set, 1; SignaledError::WouldBlock { source: ErrorSource::Value });
+    test_signaled_would_block_error!(test_try_set_and_spawn_would_block_error, val, read, try_set_and_spawn, 1; SignaledError::WouldBlock { source: ErrorSource::Value });
     test_signaled_would_block_error!(test_try_get_would_block_error, val, write, try_get; SignaledError::WouldBlock { source: ErrorSource::Value });
     test_signaled_would_block_error!(test_try_get_lock_would_block_error, val, write, try_get_lock; SignaledError::WouldBlock { source: ErrorSource::Value });
     test_signaled_would_block_error!(test_try_emit_signals_would_block_error, signals, lock, try_emit_signals, &1, &2; SignaledError::WouldBlock { source: ErrorSource::Signals });
@@ -1626,6 +1738,8 @@ mod tests {
     }
     test_signaled_poisoned_lock!(test_set_poisoned_lock_error, set, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
     test_signaled_poisoned_lock!(test_try_set_poisoned_lock_error, try_set, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_set_and_spawn_poisoned_lock_error, set_and_spawn, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_try_set_and_spawn_poisoned_lock_error, try_set_and_spawn, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
     test_signaled_poisoned_lock!(test_get_poisoned_lock_error, get; SignaledError::PoisonedLock { source: ErrorSource::Value });
     test_signaled_poisoned_lock!(test_try_get_poisoned_lock_error, try_get; SignaledError::PoisonedLock { source: ErrorSource::Value });
     test_signaled_poisoned_lock!(test_get_lock_poisoned_lock_error, get_lock; SignaledError::PoisonedLock { source: ErrorSource::Value });
@@ -1715,5 +1829,73 @@ mod tests {
     test_invalid_id_error!(test_try_set_signal_mute_invalid_signal_id_error, try_set_signal_mute, true);
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    #[test]
+    fn test_set_and_spawn() {
+        let signaled = Signaled::new(0);
+        let calls = Arc::new(Mutex::new(0));
+        
+        let calls_clone = Arc::clone(&calls);
+        signaled.add_signal(signal_sync!(move |_, _| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut lock = calls_clone.lock().unwrap();
+            *lock = *lock + 1;
+        }, |_, _| true, 3, true)).unwrap();
+
+        let calls_clone = Arc::clone(&calls);
+        signaled.add_signal(signal_sync!(move |_, _| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let lock = calls_clone.lock().unwrap();
+            assert_eq!(*lock, 1)
+        }, |_, _| true, 2, true)).unwrap();
+
+        let calls_clone = Arc::clone(&calls);
+        signaled.add_signal(signal_sync!(move |_, _| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut lock = calls_clone.lock().unwrap();
+            *lock = *lock + 2;
+        }, |_, _| true, 1, true)).unwrap();
+
+        assert_eq!(signaled.signals.lock().unwrap().len(), 3);
+        let handle = signaled.set_and_spawn(1).unwrap();
+        assert_eq!(*calls.lock().unwrap(), 0);
+        let _ = handle.join().unwrap();
+        assert_eq!(signaled.signals.lock().unwrap().len(), 0);
+        assert_eq!(*calls.lock().unwrap(), 3);
+    }
+
+    #[test]
+    fn test_try_set_and_spawn() {
+        let signaled = Signaled::new(0);
+        let calls = Arc::new(Mutex::new(0));
+        
+        let calls_clone = Arc::clone(&calls);
+        signaled.add_signal(signal_sync!(move |_, _| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut lock = calls_clone.lock().unwrap();
+            *lock = *lock + 1;
+        }, |_, _| true, 3, true)).unwrap();
+
+        let calls_clone = Arc::clone(&calls);
+        signaled.add_signal(signal_sync!(move |_, _| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let lock = calls_clone.lock().unwrap();
+            assert_eq!(*lock, 1)
+        }, |_, _| true, 2, true)).unwrap();
+
+        let calls_clone = Arc::clone(&calls);
+        signaled.add_signal(signal_sync!(move |_, _| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut lock = calls_clone.lock().unwrap();
+            *lock = *lock + 2;
+        }, |_, _| true, 1, true)).unwrap();
+
+        assert_eq!(signaled.signals.lock().unwrap().len(), 3);
+        let handle = signaled.try_set_and_spawn(1).unwrap();
+        assert_eq!(*calls.lock().unwrap(), 0);
+        let _ = handle.join().unwrap();
+        assert_eq!(signaled.signals.lock().unwrap().len(), 0);
+        assert_eq!(*calls.lock().unwrap(), 3);
+    }
 
 }
