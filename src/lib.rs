@@ -403,6 +403,33 @@ impl<T> Signaled<T> {
         self.emit_signals(&old_value, &new_value_ref)
     }
 
+    /// Sets a new value for `val` without emitting `signals`.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_value` - The new value of the [`Signaled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError::BorrowMutError`] if `val` is already borrowed.
+    ///
+    /// # Examples
+    ///
+    /// ``` 
+    /// use signaled::{Signaled, Signal, signal};
+    ///
+    /// let signaled = Signaled::new(0);
+    /// signaled.add_signal(signal!(|_, _| { println!("do something")})).unwrap();
+    /// signaled.set_silent(1).unwrap(); // This does not emit the signal so "do something" is not printed.
+    /// assert_eq!(signaled.get().unwrap(), 1);
+    /// ```
+    pub fn set_silent(&self, new_value: T) -> Result<(), SignaledError> {
+        *self.val
+            .try_borrow_mut()
+            .map_err(|_| SignaledError::BorrowMutError { source: ErrorSource::Value })? = new_value;
+        Ok(())
+    }
+
     /// Returns a reference to the current value.
     /// 
     /// # Errors
@@ -846,6 +873,7 @@ mod tests {
     }
 
     test_signaled_borrow_error!(test_set_borrow_error, val, borrow, set, 1; SignaledError::BorrowMutError { source: ErrorSource::Value });
+    test_signaled_borrow_error!(test_set_silent_borrow_error, val, borrow, set_silent, 1; SignaledError::BorrowMutError { source: ErrorSource::Value });
     test_signaled_borrow_error!(test_get_ref_borrow_error, val, borrow_mut, get_ref; SignaledError::BorrowError { source: ErrorSource::Value });
     test_signaled_borrow_error!(test_get_borrow_error, val, borrow_mut, get; SignaledError::BorrowError { source: ErrorSource::Value });
     test_signaled_borrow_error!(test_emit_signals_borrow_error, signals, borrow, emit_signals, &1, &2; SignaledError::BorrowMutError { source: ErrorSource::Signals });
@@ -976,5 +1004,22 @@ mod tests {
         for i in 1..10 {
             signaled.set(i).unwrap();
         }
+    }
+
+    #[test]
+    fn test_set_silent() {
+        let calls = Rc::new(Cell::new(0));
+        let signaled = Signaled::new(0);
+
+        let calls_clone = Rc::clone(&calls);
+        signaled.add_signal(signal!(move |_, _| calls_clone.set(calls_clone.get() + 1) )).unwrap();
+
+        signaled.set(1).unwrap();
+        assert_eq!(signaled.get().unwrap(), 1);
+        assert_eq!(calls.get(), 1);
+
+        signaled.set_silent(2).unwrap();
+        assert_eq!(signaled.get().unwrap(), 2);
+        assert_eq!(calls.get(), 1);
     }
 }

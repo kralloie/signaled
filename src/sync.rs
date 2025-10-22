@@ -596,6 +596,71 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         self.try_emit_signals(&old_value, &*guard)
     }
 
+    /// Sets a new value for `val` without emitting `signals`.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_value` - The new value of the [`Signaled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
+    ///
+    /// # Examples
+    ///
+    /// ``` 
+    /// use signaled::{signal_sync, sync::{Signaled, Signal}};
+    ///
+    /// let signaled = Signaled::new(0);
+    /// signaled.add_signal(signal_sync!(|_, _| { println!("do something")})).unwrap();
+    /// signaled.set_silent(1).unwrap(); // This does not emit the signal so "do something" is not printed.
+    /// assert_eq!(signaled.get().unwrap(), 1);
+    /// ```
+    pub fn set_silent(&self, new_value: T) -> Result<(), SignaledError> {
+        let mut guard = self.val
+            .write()
+            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Value })?;
+        *guard = new_value;
+        Ok(())
+    }
+
+    /// Sets a new value for `val` without emitting `signals`.
+    ///
+    /// This function unlike [`set_silent`], is non-blocking so there are no re-entrant calls that block until the lock for `val` is acquired.
+    /// 
+    /// # Arguments
+    ///
+    /// * `new_value` - The new value of the [`Signaled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if `val` lock is held elsewhere.
+    ///
+    /// # Examples
+    ///
+    /// ``` 
+    /// use signaled::{signal_sync, sync::{Signaled, Signal}};
+    ///
+    /// let signaled = Signaled::new(0);
+    /// signaled.add_signal(signal_sync!(|_, _| { println!("do something")})).unwrap();
+    /// signaled.try_set_silent(1).unwrap(); // This does not emit the signal so "do something" is not printed.
+    /// assert_eq!(signaled.get().unwrap(), 1);
+    /// ```
+    pub fn try_set_silent(&self, new_value: T) -> Result<(), SignaledError> {
+        let mut guard = self.val
+            .try_write()
+            .map_err(|e| {
+                match e {
+                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Value },
+                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Value }
+                }
+            })?;
+        *guard = new_value;
+        Ok(())
+    }
+
     /// Returns the lock of the current value.
     /// 
     /// # Errors
@@ -1735,6 +1800,7 @@ mod tests {
     }
 
     test_signaled_would_block_error!(test_try_set_would_block_error, val, read, try_set, 1; SignaledError::WouldBlock { source: ErrorSource::Value });
+    test_signaled_would_block_error!(test_try_set_silent_would_block_error, val, read, try_set_silent, 1; SignaledError::WouldBlock { source: ErrorSource::Value });
     test_signaled_would_block_error!(test_try_set_and_spawn_would_block_error, val, read, try_set_and_spawn, 1; SignaledError::WouldBlock { source: ErrorSource::Value });
     test_signaled_would_block_error!(test_try_get_would_block_error, val, write, try_get; SignaledError::WouldBlock { source: ErrorSource::Value });
     test_signaled_would_block_error!(test_try_get_lock_would_block_error, val, write, try_get_lock; SignaledError::WouldBlock { source: ErrorSource::Value });
@@ -1800,6 +1866,8 @@ mod tests {
     }
     test_signaled_poisoned_lock!(test_set_poisoned_lock_error, set, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
     test_signaled_poisoned_lock!(test_try_set_poisoned_lock_error, try_set, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_set_silent_poisoned_lock_error, set_silent, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_try_set_silent_poisoned_lock_error, try_set_silent, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
     test_signaled_poisoned_lock!(test_set_and_spawn_poisoned_lock_error, set_and_spawn, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
     test_signaled_poisoned_lock!(test_try_set_and_spawn_poisoned_lock_error, try_set_and_spawn, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
     test_signaled_poisoned_lock!(test_get_poisoned_lock_error, get; SignaledError::PoisonedLock { source: ErrorSource::Value });
@@ -1960,4 +2028,43 @@ mod tests {
         assert_eq!(*calls.lock().unwrap(), 3);
     }
 
+    #[test]
+    fn test_set_silent() {
+        let calls = Arc::new(Mutex::new(0));
+        let signaled = Signaled::new(0);
+
+        let calls_clone = Arc::clone(&calls);
+        signaled.add_signal(signal_sync!(move |_, _| {
+            let mut lock = calls_clone.lock().unwrap();
+            *lock = *lock + 1;
+        })).unwrap();
+
+        signaled.set(1).unwrap();
+        assert_eq!(signaled.get().unwrap(), 1);
+        assert_eq!(*calls.lock().unwrap(), 1);
+
+        signaled.set_silent(2).unwrap();
+        assert_eq!(signaled.get().unwrap(), 2);
+        assert_eq!(*calls.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_try_set_silent() {
+        let calls = Arc::new(Mutex::new(0));
+        let signaled = Signaled::new(0);
+
+        let calls_clone = Arc::clone(&calls);
+        signaled.add_signal(signal_sync!(move |_, _| {
+            let mut lock = calls_clone.lock().unwrap();
+            *lock = *lock + 1;
+        })).unwrap();
+
+        signaled.try_set(1).unwrap();
+        assert_eq!(signaled.try_get().unwrap(), 1);
+        assert_eq!(*calls.lock().unwrap(), 1);
+
+        signaled.try_set_silent(2).unwrap();
+        assert_eq!(signaled.try_get().unwrap(), 2);
+        assert_eq!(*calls.lock().unwrap(), 1);
+    }
 }
