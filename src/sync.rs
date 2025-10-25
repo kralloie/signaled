@@ -80,7 +80,7 @@
 //! ```
 
 #![allow(dead_code)]
-use std::fmt::{Display};
+use std::fmt::{Debug, Display};
 use std::sync::{RwLock, RwLockReadGuard, TryLockError};
 use std::sync::{Arc, Mutex, atomic::{AtomicU64, AtomicBool, Ordering}};
 use std::thread;
@@ -631,6 +631,18 @@ impl<T: Send + Sync + 'static> Display for Signal<T> {
     }
 }
 
+impl<T: Send + Sync + 'static> Debug for Signal<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Signal")
+            .field("id", &self.id)
+            .field("priority", &self.priority.load(Ordering::Relaxed))
+            .field("once", &self.once.load(Ordering::Relaxed))
+            .field("mute", &self.mute.load(Ordering::Relaxed))
+            .field("callback", &"<function>")
+            .field("trigger", &"<function>")
+            .finish()
+    }
+}
 
 impl<T: Send + Sync + 'static> Default for Signal<T> {
     fn default() -> Self {
@@ -1608,6 +1620,21 @@ impl<T: Display + Send + Sync + 'static> Display for Signaled<T> {
                 .join(", ")
         }).unwrap_or_else(|_| "<poisoned>".to_string());
         write!(f, "Signaled {{ val: {}, signal_count: {}, signals: [{}] }}", value, signals_len, signals_string)
+    }
+}
+
+impl<T: Debug + Send + Sync + 'static> Debug for Signaled<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Signaled");
+        match self.val.try_read() {
+            Ok(val) => s.field("val", &*val),
+            Err(_) => s.field("val", &"<locked>"),
+        };
+        match self.signals.try_lock() {
+            Ok(signals) => s.field("signals", &*signals),
+            Err(_) => s.field("signals", &"<locked>"),
+        };
+        s.finish()
     }
 }
 

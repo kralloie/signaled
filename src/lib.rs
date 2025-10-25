@@ -71,7 +71,7 @@
 #![allow(dead_code)]
 use std::cell::{Cell, Ref, RefCell};
 use std::rc::Rc;
-use std::fmt::{Display};
+use std::fmt::{Debug, Display};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod sync;
@@ -355,6 +355,19 @@ impl<T> Signal<T> {
 impl<T> Display for Signal<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Signal {{ id: {}, priority: {} }}", self.id, self.priority.get())
+    }
+}
+
+impl<T> Debug for Signal<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Signal")
+            .field("id", &self.id)
+            .field("priority", &self.priority.get())
+            .field("once", &self.once.get())
+            .field("mute", &self.mute.get())
+            .field("callback", &"<function>")
+            .field("trigger", &"<function>")
+            .finish()
     }
 }
 
@@ -823,6 +836,21 @@ impl<T: Display> Display for Signaled<T> {
                 .join(", ")
         }).unwrap_or_else(|_| "<borrowed>".to_string());
         write!(f, "Signaled {{ val: {}, signal_count: {}, signals: [{}] }}", value, signals_len, signals_string)
+    }
+}
+
+impl<T: Debug> Debug for Signaled<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Signaled");
+        match self.val.try_borrow() {
+            Ok(val) => s.field("val", &*val),
+            Err(_) => s.field("val", &"<borrowed>"),
+        };
+        match self.signals.try_borrow() {
+            Ok(signals) => s.field("signals", &*signals),
+            Err(_) => s.field("signals", &"<borrowed>"),
+        };
+        s.finish()
     }
 }
 
