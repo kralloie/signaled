@@ -354,7 +354,7 @@ impl<T> Signal<T> {
 
 impl<T> Display for Signal<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Signal {{ id: {}, priority: {} }}", self.id, self.priority.get())
+        write!(f, "Signal {{ id: {}, priority: {}, once: {}, mute: {} }}", self.id, self.priority.get(), self.once.get(), self.mute.get())
     }
 }
 
@@ -825,17 +825,18 @@ impl<T> Signaled<T> {
 impl<T: Display> Display for Signaled<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = self.val.try_borrow()
-            .map(|v| format!("{}", *v))
+            .map(|v| v.to_string())
             .unwrap_or_else(|_| "<borrowed>".to_string());
-        let mut signals_len = 0;
-        let signals_string: String = self.signals.try_borrow().map(|s| {
-            signals_len = s.len();
-            s.iter()
-                .map(|signal| format!("{}", signal))
+
+        let signals_display = self.signals.try_borrow().map(|signals| {
+            let signals_str = signals.iter()
+                .map(|s| s.to_string())
                 .collect::<Vec<_>>()
-                .join(", ")
-        }).unwrap_or_else(|_| "<borrowed>".to_string());
-        write!(f, "Signaled {{ val: {}, signal_count: {}, signals: [{}] }}", value, signals_len, signals_string)
+                .join(", ");
+            format!("signal_count: {}, signals: [{}]", signals.len(), signals_str)
+        }).unwrap_or_else(|_| "signals: <borrowed>".to_string());
+
+        write!(f, "Signaled {{ val: {}, {} }}", value, signals_display)
     }
 }
 

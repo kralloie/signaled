@@ -627,7 +627,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
 
 impl<T: Send + Sync + 'static> Display for Signal<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Signal {{ id: {}, priority: {} }}", self.id, self.priority.load(Ordering::Relaxed))
+        write!(f, "Signal {{ id: {}, priority: {}, once: {}, mute: {} }}", self.id, self.priority.load(Ordering::Relaxed), self.once.load(Ordering::Relaxed), self.mute.load(Ordering::Relaxed))
     }
 }
 
@@ -1608,18 +1608,19 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
 impl<T: Display + Send + Sync + 'static> Display for Signaled<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = self.val.read()
-            .map(|v| format!("{}", *v))
-            .unwrap_or_else(|_| "<poisoned>".to_string());
-        let mut signals_len = 0;
-        let signals_string: String = self.signals.lock().map(|s| {
-            signals_len = s.len();
-            s.iter()
-                .map(|signal| format!("{}", signal))
+        let value = self.val.try_read()
+            .map(|v| v.to_string())
+            .unwrap_or_else(|_| "<locked>".to_string());
+
+        let signals_display = self.signals.try_lock().map(|signals| {
+            let signals_str = signals.iter()
+                .map(|s| s.to_string())
                 .collect::<Vec<_>>()
-                .join(", ")
-        }).unwrap_or_else(|_| "<poisoned>".to_string());
-        write!(f, "Signaled {{ val: {}, signal_count: {}, signals: [{}] }}", value, signals_len, signals_string)
+                .join(", ");
+            format!("signal_count: {}, signals: [{}]", signals.len(), signals_str)
+        }).unwrap_or_else(|_| "signals: <locked>".to_string());
+
+        write!(f, "Signaled {{ val: {}, {} }}", value, signals_display)
     }
 }
 
