@@ -134,9 +134,9 @@ pub fn new_signal_id() -> SignalId {
 /// ```
 pub struct Signal<T: Send + Sync + 'static> {
     /// Function to run when the [`Signal`] is emitted and the trigger condition is met.
-    callback: Arc<Mutex<Box<dyn Fn(&T, &T) + Send + Sync + 'static>>>,
+    callback: Arc<RwLock<Arc<dyn Fn(&T, &T) + Send + Sync + 'static>>>,
     /// Function that decides if the callback will be invoked or not when the [`Signal`] is emitted.
-    trigger: Arc<Mutex<Box<dyn Fn(&T, &T) -> bool + Send + Sync + 'static>>>,
+    trigger: Arc<RwLock<Arc<dyn Fn(&T, &T) -> bool + Send + Sync + 'static>>>,
     /// Identifier for the [`Signal`].
     id: u64,
     /// Number used in the [`Signaled`] struct to decide the order of execution of the signals.
@@ -174,8 +174,8 @@ impl<T: Send + Sync + 'static> Signal<T> {
         G: Fn(&T, &T) -> bool + Send + Sync + 'static,
     {
         Signal {
-            callback: Arc::new(Mutex::new(Box::new(callback))),
-            trigger: Arc::new(Mutex::new(Box::new(trigger))),
+            callback: Arc::new(RwLock::new(Arc::new(callback))),
+            trigger: Arc::new(RwLock::new(Arc::new(trigger))),
             id: new_signal_id(),
             priority: AtomicU64::new(priority),
             once: AtomicBool::new(once),
@@ -213,10 +213,10 @@ impl<T: Send + Sync + 'static> Signal<T> {
         if self.mute.load(Ordering::Relaxed) {
             return Ok(())
         }
-        let trigger = self.trigger.lock()
+        let trigger = self.trigger.read()
             .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })?;
         if trigger(old, new) {
-            let callback = self.callback.lock()
+            let callback = self.callback.read()
                 .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalCallback })?;
             callback(old, new);
         }
@@ -252,7 +252,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
         if self.mute.load(Ordering::Relaxed) {
             return Ok(())
         }
-        let trigger = self.trigger.try_lock()
+        let trigger = self.trigger.try_read()
             .map_err(|e| {
                 match e {
                     TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger },
@@ -260,7 +260,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
                 }
             })?;
         if trigger(old, new) {
-            let callback = self.callback.try_lock()
+            let callback = self.callback.try_read()
                 .map_err(|e| {
                     match e {
                         TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalCallback },
@@ -288,8 +288,8 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// For a non-blocking alternative, see [`try_set_callback`].
     pub fn set_callback<F: Fn(&T, &T) + Send + Sync + 'static>(&self, callback: F) -> Result<(), SignaledError> {
-        let mut lock = self.callback.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalCallback })?;
-        *lock = Box::new(callback);
+        let mut lock = self.callback.write().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalCallback })?;
+        *lock = Arc::new(callback);
         Ok(())
     }
     
@@ -307,13 +307,13 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// Returns [`SignaledError::WouldBlock`] if the `callback` lock is held elsewhere.
     pub fn try_set_callback<F: Fn(&T, &T) + Send + Sync + 'static>(&self, callback: F) -> Result<(), SignaledError> {
-        let mut lock = self.callback.try_lock().map_err(|e| {
+        let mut lock = self.callback.try_write().map_err(|e| {
             match e {
                 TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalCallback },
                 TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalCallback }
             }
         })?;
-        *lock = Box::new(callback);
+        *lock = Arc::new(callback);
         Ok(())
     }
 
@@ -335,8 +335,8 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// For a non-blocking alternative, see [`try_set_trigger`]
     pub fn set_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(&self, trigger: F) -> Result<(), SignaledError> {
-        let mut lock = self.trigger.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })?;
-        *lock = Box::new(trigger);
+        let mut lock = self.trigger.write().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })?;
+        *lock = Arc::new(trigger);
         Ok(())
     }
 
@@ -356,13 +356,13 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// Returns [`SignaledError::WouldBlock`] if the `trigger` lock is held elsewhere.
     pub fn try_set_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(&self, trigger: F) -> Result<(), SignaledError> {
-        let mut lock = self.trigger.try_lock().map_err(|e| {
+        let mut lock = self.trigger.try_write().map_err(|e| {
             match e {
                 TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger },
                 TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalTrigger }
             }
         })?;
-        *lock = Box::new(trigger);
+        *lock = Arc::new(trigger);
         Ok(())
     }
 
@@ -378,8 +378,8 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// For a non-blocking alternative see [`try_remove_trigger`]
     pub fn remove_trigger(&self) -> Result<(), SignaledError> {
-        let mut lock = self.trigger.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })?;
-        *lock = Box::new(|_, _| true);
+        let mut lock = self.trigger.write().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })?;
+        *lock = Arc::new(|_, _| true);
         Ok(())
     }
 
@@ -393,13 +393,13 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// Returns [`SignaledError::WouldBlock`] if the `trigger` lock is held elsewhere.
     pub fn try_remove_trigger(&self) -> Result<(), SignaledError> {
-        let mut lock = self.trigger.try_lock().map_err(|e| {
+        let mut lock = self.trigger.try_write().map_err(|e| {
             match e {
                 TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger },
                 TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalTrigger }
             }
         })?;
-        *lock = Box::new(|_, _| true);
+        *lock = Arc::new(|_, _| true);
         Ok(())
     }
 
@@ -423,6 +423,206 @@ impl<T: Send + Sync + 'static> Signal<T> {
     pub fn set_mute(&self, is_mute: bool) {
         self.mute.store(is_mute, Ordering::Relaxed);
     } 
+
+
+    /// Combines `N` amount of [`Signal`]s returning a single combined [`Signal`] instance.
+    /// 
+    /// The order in which each `callback` will be called depends on the order that the [`Signal`]s are passed into the argument's slice.
+    /// 
+    /// * `callback` will invoke all callbacks from the combined [`Signal`]s.
+    /// 
+    /// * `trigger` will combine all triggers only returning `true` if every `trigger` does so.
+    /// 
+    /// * `priority` will be the highest `priority` of the provided `signals`.
+    /// 
+    /// * `mute` and `once` will be `false` by default.
+    /// 
+    /// * `id` will be a new unique [`SignalId`].
+    /// 
+    /// # Arguments
+    /// 
+    /// * `signals` A slice containing the [`Signal`]s that will be combined into a single [`Signal`] instance.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns [`SignaledError::PoisonedLock`] if any of the provided [`Signal`] instances `callback` or `trigger` locks are poisoned.
+    /// 
+    /// # Examples
+    /// ```
+    /// use std::sync::{Arc, Mutex};
+    /// use signaled::{signal_sync, sync::{Signal}};
+    /// 
+    /// let calls = Arc::new(Mutex::new(0));
+    /// 
+    /// let calls_clone = Arc::clone(&calls);
+    /// let signal_a = signal_sync!(move |_, _| {
+    ///     let mut lock = calls_clone.lock().unwrap();
+    ///     *lock = *lock + 1;
+    /// });
+    /// 
+    /// let calls_clone = Arc::clone(&calls);
+    /// let signal_b = signal_sync!(move |_, _| {
+    ///     let mut lock = calls_clone.lock().unwrap();
+    ///     *lock = *lock + 2;
+    /// });
+    /// 
+    /// let signal_c = Signal::combine(&[signal_a, signal_b]).unwrap();
+    /// 
+    /// signal_c.emit(&(), &()).unwrap();
+    /// assert_eq!(*calls.lock().unwrap(), 3); // `signal_a` increases calls by 1 and `signal_b` increases calls by 2 so the `combined` signal increases calls by 3
+    /// ```
+    /// 
+    /// # Warnings
+    /// 
+    /// This function may result in a deadlock if used incorrectly.
+    /// 
+    /// For a non-blocking alternative, see [`try_combine`].
+    pub fn combine(signals: &[Signal<T>]) -> Result<Self, SignaledError> {
+        let callbacks: Vec<Arc<dyn Fn(&T, &T) + Send + Sync + 'static>> = signals
+            .iter()
+            .map(|signal| {
+                signal.callback.read()
+                    .map(|cb| cb.clone())
+                    .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalCallback })
+            })
+            .collect::<Result<_, _>>()?;
+
+        let triggers: Vec<Arc<dyn Fn(&T, &T) -> bool + Send + Sync + 'static>> = signals
+            .iter()
+            .map(|signal| {
+                signal.trigger.read()
+                    .map(|tr| tr.clone())
+                    .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })
+            })
+            .collect::<Result<_, _>>()?;
+
+        let priority = signals
+            .iter()
+            .max_by_key(|s| s.priority.load(Ordering::Relaxed))
+            .map(|s| s.priority.load(Ordering::Relaxed))
+            .unwrap_or(0);
+        let id = new_signal_id();
+        Ok(Signal {
+            callback: Arc::new(RwLock::new(Arc::new(move |old, new| {
+                for callback in &callbacks {
+                    callback(old, new);
+                }
+            }))),
+            trigger: Arc::new(RwLock::new(Arc::new(move |old, new| {
+                triggers
+                    .iter()
+                    .all(|tr| tr(old, new))
+            }))),
+            id,
+            priority: AtomicU64::new(priority),
+            once: AtomicBool::new(false),
+            mute: AtomicBool::new(false)
+        })
+    }
+
+
+    /// Combines `N` amount of [`Signal`]s returning a single combined [`Signal`] instance.
+    /// 
+    /// This function unlike [`combine`], is non-blocking so there are no re-entrant calls that block until the `callback` and `trigger` locks can be acquired.
+    /// 
+    /// The order in which each `callback` will be called depends on the order that the [`Signal`]s are passed into the argument's slice.
+    /// 
+    /// * `callback` will invoke all callbacks from the combined [`Signal`]s.
+    /// 
+    /// * `trigger` will combine all triggers only returning `true` if every `trigger` does so.
+    /// 
+    /// * `priority` will be the highest `priority` of the provided `signals`.
+    /// 
+    /// * `mute` and `once` will be `false` by default.
+    /// 
+    /// * `id` will be a new unique [`SignalId`].
+    /// 
+    /// # Arguments
+    /// 
+    /// * `signals` A slice containing the [`Signal`]s that will be combined into a single [`Signal`] instance.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns [`SignaledError::PoisonedLock`] if any of the provided [`Signal`] instances `callback` or `trigger` locks are poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if any of the provided [`Signal`] instances `callback` or `trigger` locks are held elsewhere.
+    /// 
+    /// # Examples
+    /// ```
+    /// use std::sync::{Arc, Mutex};
+    /// use signaled::{signal_sync, sync::{Signal}};
+    /// 
+    /// let calls = Arc::new(Mutex::new(0));
+    /// 
+    /// let calls_clone = Arc::clone(&calls);
+    /// let signal_a = signal_sync!(move |_, _| {
+    ///     let mut lock = calls_clone.lock().unwrap();
+    ///     *lock = *lock + 1;
+    /// });
+    /// 
+    /// let calls_clone = Arc::clone(&calls);
+    /// let signal_b = signal_sync!(move |_, _| {
+    ///     let mut lock = calls_clone.lock().unwrap();
+    ///     *lock = *lock + 2;
+    /// });
+    /// 
+    /// let signal_c = Signal::try_combine(&[signal_a, signal_b]).unwrap();
+    /// 
+    /// signal_c.emit(&(), &()).unwrap();
+    /// assert_eq!(*calls.lock().unwrap(), 3); // `signal_a` increases calls by 1 and `signal_b` increases calls by 2 so the `combined` signal increases calls by 3
+    /// ```
+    pub fn try_combine(signals: &[Signal<T>]) -> Result<Self, SignaledError> {
+        let callbacks: Vec<Arc<dyn Fn(&T, &T) + Send + Sync + 'static>> = signals
+            .iter()
+            .map(|signal| {
+                signal.callback.try_read()
+                    .map(|cb| cb.clone())
+                    .map_err(|e| {
+                        match e {
+                            TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalCallback },
+                            TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalCallback }
+                        }
+                    })
+            })
+            .collect::<Result<_, _>>()?;
+
+        let triggers: Vec<Arc<dyn Fn(&T, &T) -> bool + Send + Sync + 'static>> = signals
+            .iter()
+            .map(|signal| {
+                signal.trigger.try_read()
+                    .map(|tr| tr.clone())
+                    .map_err(|e| {
+                        match e {
+                            TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger },
+                            TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalTrigger }
+                        }
+                    })
+            })
+            .collect::<Result<_, _>>()?;
+
+        let priority = signals
+            .iter()
+            .max_by_key(|s| s.priority.load(Ordering::Relaxed))
+            .map(|s| s.priority.load(Ordering::Relaxed))
+            .unwrap_or(0);
+        let id = new_signal_id();
+        Ok(Signal {
+            callback: Arc::new(RwLock::new(Arc::new(move |old, new| {
+                for callback in &callbacks {
+                    callback(old, new);
+                }
+            }))),
+            trigger: Arc::new(RwLock::new(Arc::new(move |old, new| {
+                triggers
+                    .iter()
+                    .all(|tr| tr(old, new) )
+            }))),
+            id,
+            priority: AtomicU64::new(priority),
+            once: AtomicBool::new(false),
+            mute: AtomicBool::new(false)
+        })
+    }
 }
 
 impl<T: Send + Sync + 'static> Display for Signal<T> {
@@ -435,8 +635,8 @@ impl<T: Send + Sync + 'static> Display for Signal<T> {
 impl<T: Send + Sync + 'static> Default for Signal<T> {
     fn default() -> Self {
         Self {
-            callback: Arc::new(Mutex::new(Box::new(|_, _| {}))),
-            trigger: Arc::new(Mutex::new(Box::new(|_, _| true))),
+            callback: Arc::new(RwLock::new(Arc::new(|_, _| {}))),
+            trigger: Arc::new(RwLock::new(Arc::new(|_, _| true))),
             id: new_signal_id(),
             priority: AtomicU64::new(0),
             once: AtomicBool::new(false),
@@ -1229,6 +1429,169 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
+    /// Combines multiple [`Signal`]s by their `id` into a single [`Signal`].
+    /// 
+    /// This function finds signals by their `id`, removes them from the `Signaled` instance,
+    /// and then uses [`Signal::combine()`] to create a new, single [`Signal`] instance.
+    /// This new combined signal is then added back to the `signals` collection and its new `SignalId` is returned.
+    /// 
+    /// For more details about the combination process,
+    /// see the documentation for [`Signal::combine()`].
+    /// 
+    /// # Arguments
+    /// 
+    /// * `signal_ids` A slice containing the `id`s of the [`Signal`]s that will be combined into a single [`Signal`].
+    /// 
+    /// # Errors
+    /// 
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or any target [`Signal`] `callback` or `trigger` locks are poisoned.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the any of the provided `SignalId` does not match any [`Signal`].
+    /// 
+    /// # Examples
+    /// ```
+    /// use std::sync::{Arc, Mutex};
+    /// use signaled::{signal_sync, sync::{Signal, Signaled}};
+    /// 
+    /// let signaled = Signaled::new(0);
+    /// 
+    /// let calls = Arc::new(Mutex::new(0));
+    /// 
+    /// let calls_clone = Arc::clone(&calls);
+    /// let signal_a = signal_sync!(move |_, _| {
+    ///     let mut lock = calls_clone.lock().unwrap();
+    ///     *lock = *lock + 1;
+    /// });
+    /// let signal_a_id = signaled.add_signal(signal_a).unwrap();
+    /// 
+    /// let calls_clone = Arc::clone(&calls);
+    /// let signal_b = signal_sync!(move |_, _| {
+    ///     let mut lock = calls_clone.lock().unwrap();
+    ///     *lock = *lock + 2;
+    /// });
+    /// let signal_b_id = signaled.add_signal(signal_b).unwrap();
+    /// 
+    /// signaled.combine_signals(&[signal_a_id, signal_b_id]).unwrap();
+    /// 
+    /// signaled.set(1).unwrap();
+    /// assert_eq!(*calls.lock().unwrap(), 3); // `signal_a` increases calls by 1 and `signal_b` increases calls by 2 so the `combined` signal increases calls by 3
+    /// ```
+    /// 
+    /// # Warnings
+    /// 
+    /// This function may result in a deadlock if used incorrectly.
+    /// 
+    /// For a non-blocking alternative, see [`try_combine_signals`].
+    pub fn combine_signals(&self, signal_ids: &[SignalId]) -> Result<SignalId, SignaledError> {
+        let mut target_signals = Vec::new();
+        let mut signals = self.signals
+            .lock()
+            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
+
+        for &id in signal_ids {
+            if !signals.iter().any(|s| s.id == id) {
+                return Err(SignaledError::InvalidSignalId { id: id })
+            }
+        }
+
+        for &id in signal_ids {
+            let index = signals
+                .iter()
+                .position(|s| s.id == id)
+                .ok_or_else(|| SignaledError::InvalidSignalId { id: id })?;
+            let signal = signals.remove(index);
+            target_signals.push(signal);
+        }
+
+        let combined_signal = Signal::combine(&target_signals)?;
+        let id = combined_signal.id;
+        signals.push(combined_signal);
+        Ok(id)
+    }
+
+
+    /// Combines multiple [`Signal`]s by their `id` into a single [`Signal`].
+    /// 
+    /// This function unlike [`combine_signals`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// 
+    /// This function finds signals by their `id`, removes them from the `Signaled` instance,
+    /// and then uses [`Signal::try_combine()`] to create a new, single [`Signal`] instance.
+    /// This new combined signal is then added back to the `signals` collection and its new `SignalId` is returned.
+    /// 
+    /// For more details about the combination process,
+    /// see the documentation for [`Signal::try_combine()`].
+    /// 
+    /// # Arguments
+    /// 
+    /// * `signal_ids` A slice containing the `id`s of the [`Signal`]s that will be combined into a single [`Signal`].
+    /// 
+    /// # Errors
+    /// 
+    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or any target [`Signal`] `callback` or `trigger` locks are poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the any of the provided `SignalId` does not match any [`Signal`].
+    /// 
+    /// # Examples
+    /// ```
+    /// use std::sync::{Arc, Mutex};
+    /// use signaled::{signal_sync, sync::{Signal, Signaled}};
+    /// 
+    /// let signaled = Signaled::new(0);
+    /// 
+    /// let calls = Arc::new(Mutex::new(0));
+    /// 
+    /// let calls_clone = Arc::clone(&calls);
+    /// let signal_a = signal_sync!(move |_, _| {
+    ///     let mut lock = calls_clone.lock().unwrap();
+    ///     *lock = *lock + 1;
+    /// });
+    /// let signal_a_id = signaled.add_signal(signal_a).unwrap();
+    /// 
+    /// let calls_clone = Arc::clone(&calls);
+    /// let signal_b = signal_sync!(move |_, _| {
+    ///     let mut lock = calls_clone.lock().unwrap();
+    ///     *lock = *lock + 2;
+    /// });
+    /// let signal_b_id = signaled.add_signal(signal_b).unwrap();
+    /// 
+    /// signaled.try_combine_signals(&[signal_a_id, signal_b_id]).unwrap();
+    /// 
+    /// signaled.set(1).unwrap();
+    /// assert_eq!(*calls.lock().unwrap(), 3); // `signal_a` increases calls by 1 and `signal_b` increases calls by 2 so the `combined` signal increases calls by 3
+    /// ```
+    pub fn try_combine_signals(&self, signal_ids: &[SignalId]) -> Result<SignalId, SignaledError> {
+        let mut target_signals = Vec::new();
+        let mut signals = self.signals
+            .try_lock()
+            .map_err(|e| {
+                match e {
+                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
+                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
+                }
+            })?;
+
+        for &id in signal_ids {
+            if !signals.iter().any(|s| s.id == id) {
+                return Err(SignaledError::InvalidSignalId { id: id })
+            }
+        }
+
+        for &id in signal_ids {
+            let index = signals
+                .iter()
+                .position(|s| s.id == id)
+                .ok_or_else(|| SignaledError::InvalidSignalId { id: id })?;
+            let signal = signals.remove(index);
+            target_signals.push(signal);
+        }
+
+        let combined_signal = Signal::try_combine(&target_signals)?;
+        let id = combined_signal.id;
+        signals.push(combined_signal);
+        Ok(id)
+    }
 }
 
 impl<T: Display + Send + Sync + 'static> Display for Signaled<T> {
@@ -1813,6 +2176,7 @@ mod tests {
     test_signaled_would_block_error!(test_try_set_signal_priority_would_block_error, signals, lock, try_set_signal_priority, 1; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
     test_signaled_would_block_error!(test_try_set_signal_once_would_block_error, signals, lock, try_set_signal_once, true; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
     test_signaled_would_block_error!(test_try_set_signal_mute_would_block_error, signals, lock, try_set_signal_mute, true; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
+    test_signaled_would_block_error!(test_try_combine_signals_would_block_error, signals, lock, try_combine_signals, &[1, 2]; SignaledError::WouldBlock { source: ErrorSource::Signals });
 
     macro_rules! test_signal_would_block_error {
         ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr) => {
@@ -1826,11 +2190,11 @@ mod tests {
         };
     }
 
-    test_signal_would_block_error!(test_try_emit_callback_would_block_error, callback, lock, try_emit, &1, &2; SignaledError::WouldBlock { source: ErrorSource::SignalCallback });
-    test_signal_would_block_error!(test_try_emit_trigger_would_block_error, trigger, lock, try_emit, &1, &2; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
-    test_signal_would_block_error!(test_try_set_callback_would_block_error, callback, lock, try_set_callback, |_, _| {}; SignaledError::WouldBlock { source: ErrorSource::SignalCallback });
-    test_signal_would_block_error!(test_try_set_trigger_would_block_error, trigger, lock, try_set_trigger, |_, _| true; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
-    test_signal_would_block_error!(test_try_remove_trigger_would_block_error, trigger, lock, try_remove_trigger; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
+    test_signal_would_block_error!(test_try_emit_callback_would_block_error, callback, write, try_emit, &1, &2; SignaledError::WouldBlock { source: ErrorSource::SignalCallback });
+    test_signal_would_block_error!(test_try_emit_trigger_would_block_error, trigger, write, try_emit, &1, &2; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
+    test_signal_would_block_error!(test_try_set_callback_would_block_error, callback, write, try_set_callback, |_, _| {}; SignaledError::WouldBlock { source: ErrorSource::SignalCallback });
+    test_signal_would_block_error!(test_try_set_trigger_would_block_error, trigger, write, try_set_trigger, |_, _| true; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
+    test_signal_would_block_error!(test_try_remove_trigger_would_block_error, trigger, write, try_remove_trigger; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1892,6 +2256,8 @@ mod tests {
     test_signaled_poisoned_lock!(test_try_set_signal_once_poisoned_lock_error, try_set_signal_once, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
     test_signaled_poisoned_lock!(test_set_signal_mute_poisoned_lock_error, set_signal_mute, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
     test_signaled_poisoned_lock!(test_try_set_signal_mute_poisoned_lock_error, try_set_signal_mute, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_combine_signals_poisoned_lock_error, combine_signals, &[1, 2]; SignaledError::PoisonedLock { source: ErrorSource::Signals });
+    test_signaled_poisoned_lock!(test_try_combine_signals_poisoned_lock_error, try_combine_signals, &[1, 2]; SignaledError::PoisonedLock { source: ErrorSource::Signals });
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1902,7 +2268,7 @@ mod tests {
                 let signal: Arc<Signal<i32>> = Arc::new(signal_sync!(|_, _| {}));
                 let signal_clone = Arc::clone(&signal);
                 let result = std::panic::catch_unwind(move || {
-                    let _lock = signal_clone.$lock.lock().unwrap();
+                    let _lock = signal_clone.$lock.write().unwrap();
                     panic!();
                 });
                 assert!(result.is_err());
@@ -2066,5 +2432,98 @@ mod tests {
         signaled.try_set_silent(2).unwrap();
         assert_eq!(signaled.try_get().unwrap(), 2);
         assert_eq!(*calls.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_signal_combine() {
+        let calls = Arc::new(Mutex::new(0));
+        let calls_clone = Arc::clone(&calls);
+        let signal_a: Signal<i32> = Signal::new(
+            move |_, _| { 
+                let mut lock = calls_clone.lock().unwrap();
+                *lock = *lock + 1;    
+            },
+            |_, new| { *new > 10 },
+            100,
+            false,
+            false
+        );
+
+        let calls_clone = Arc::clone(&calls);
+        let signal_b: Signal<i32> = Signal::new(
+            move |_, _| {
+                let mut lock = calls_clone.lock().unwrap();
+                *lock = *lock + 2;    
+            },
+            |old, _| { *old > 10 },
+            10,
+            false,
+            false
+        );
+
+        signal_a.emit(&0, &9).unwrap(); // `new` < 10, Calls = 0
+        assert_eq!(*calls.lock().unwrap(), 0);
+        signal_a.emit(&0, &11).unwrap(); // `new` > 10, Calls = 1
+        assert_eq!(*calls.lock().unwrap(), 1);
+
+        signal_b.emit(&9, &0).unwrap(); // `old` < 10, Calls = 1
+        assert_eq!(*calls.lock().unwrap(), 1);
+        signal_b.emit(&11, &0).unwrap(); // `old` > 10, Calls = 3
+        assert_eq!(*calls.lock().unwrap(), 3);
+
+        let signal_c = Signal::combine(&[signal_a, signal_b]).unwrap();
+        assert_eq!(signal_c.priority.load(Ordering::Relaxed), 100); // Keeps the highest priority after combining
+
+        signal_c.emit(&9, &9).unwrap(); // Both triggers return false
+        assert_eq!(*calls.lock().unwrap(), 3);
+        signal_c.emit(&9, &11).unwrap(); // One triggers return false
+        assert_eq!(*calls.lock().unwrap(), 3);
+        signal_c.emit(&11, &11).unwrap(); // Both triggers return true, Calls = 6
+        assert_eq!(*calls.lock().unwrap(), 6);
+    }
+
+    #[test]
+    fn test_signal_try_combine_would_block_error() {
+        {
+            let signal_a: Signal<i32> = signal_sync!(|_, _| {});
+            let signal_b: Signal<i32> = signal_sync!(|_, _| {});
+            let signals_to_combine = vec![signal_a, signal_b];
+            let _borrow = signals_to_combine[0].callback.write().unwrap();
+            assert!(Signal::try_combine(&signals_to_combine).is_err_and(|e| e == SignaledError::WouldBlock { source: ErrorSource::SignalCallback }));
+        }
+        {
+            let signal_a: Signal<i32> = signal_sync!(|_, _| {});
+            let signal_b: Signal<i32> = signal_sync!(|_, _| {});
+            let signals_to_combine = vec![signal_a, signal_b];
+            let _borrow = signals_to_combine[0].trigger.write().unwrap();
+            assert!(Signal::try_combine(&signals_to_combine).is_err_and(|e| e == SignaledError::WouldBlock { source: ErrorSource::SignalTrigger }));
+        }
+    }
+
+    #[test]
+    fn test_combine_signals() {
+        let signaled = Signaled::new(0);
+        let signal_a_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let signal_b_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let signal_c_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let signal_d_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        assert_eq!(signaled.signals.lock().unwrap().len(), 4);
+
+        signaled.combine_signals(&[signal_a_id, signal_b_id, signal_c_id, signal_d_id]).unwrap();
+        assert_eq!(signaled.signals.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_combine_signals_invalid_id_error() {
+        let signaled = Signaled::new(0);
+        let signal_a_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let signal_b_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let signal_c_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let signal_d_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        assert_eq!(signaled.signals.lock().unwrap().len(), 4);
+
+        assert!(signaled.combine_signals(&[signal_a_id, signal_b_id, signal_c_id, signal_d_id + 1]).is_err_and(|e| {
+            e == SignaledError::InvalidSignalId { id: signal_d_id + 1 }
+        }))
     }
 }
