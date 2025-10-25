@@ -2462,7 +2462,7 @@ mod tests {
     }
 
     #[test]
-    fn test_signal_combine() {
+    fn test_combine() {
         let calls = Arc::new(Mutex::new(0));
         let calls_clone = Arc::clone(&calls);
         let signal_a: Signal<i32> = Signal::new(
@@ -2510,7 +2510,56 @@ mod tests {
     }
 
     #[test]
-    fn test_signal_try_combine_would_block_error() {
+    fn test_combine_signals() {
+        let signaled = Signaled::new(0);
+        let signal_a_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let signal_b_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let signal_c_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let signal_d_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        assert_eq!(signaled.signals.lock().unwrap().len(), 4);
+
+        signaled.combine_signals(&[signal_a_id, signal_b_id, signal_c_id, signal_d_id]).unwrap();
+        assert_eq!(signaled.signals.lock().unwrap().len(), 1);
+    }
+
+    macro_rules! combine_poisoned_lock {
+        ($combine:ident, $lock:ident, $error:expr) => {
+            let signal_a: Arc<Signal<()>> = Arc::new(signal_sync!(|_, _| {}));
+            let signal_a_clone = Arc::clone(&signal_a);
+            let result = std::panic::catch_unwind(move || {
+                let _lock = signal_a_clone.$lock.write().unwrap();
+                panic!()
+            });
+            assert!(result.is_err());
+
+            let signal_b: Signal<()> = signal_sync!(|_, _| {});
+            let signal_a = Arc::try_unwrap(signal_a).unwrap();
+            let err = $error;
+            assert!(Signal::$combine(&[signal_a, signal_b]).is_err_and(|e| e == err));
+        }
+    }
+
+    #[test]
+    fn test_combine_poisoned_lock_error() {
+        {
+            combine_poisoned_lock!(combine, callback, SignaledError::PoisonedLock { source: ErrorSource::SignalCallback });
+        }
+        {
+            combine_poisoned_lock!(combine, trigger, SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
+        }
+    }
+
+    fn test_try_combine_poisoned_lock_error() {
+        {
+            combine_poisoned_lock!(try_combine, callback, SignaledError::PoisonedLock { source: ErrorSource::SignalCallback });
+        }
+        {
+            combine_poisoned_lock!(try_combine, trigger, SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
+        }
+    }
+
+    #[test]
+    fn test_try_combine_would_block_error() {
         {
             let signal_a: Signal<i32> = signal_sync!(|_, _| {});
             let signal_b: Signal<i32> = signal_sync!(|_, _| {});
@@ -2528,29 +2577,24 @@ mod tests {
     }
 
     #[test]
-    fn test_combine_signals() {
-        let signaled = Signaled::new(0);
-        let signal_a_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let signal_b_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let signal_c_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let signal_d_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        assert_eq!(signaled.signals.lock().unwrap().len(), 4);
-
-        signaled.combine_signals(&[signal_a_id, signal_b_id, signal_c_id, signal_d_id]).unwrap();
-        assert_eq!(signaled.signals.lock().unwrap().len(), 1);
-    }
-
-    #[test]
     fn test_combine_signals_invalid_id_error() {
         let signaled = Signaled::new(0);
         let signal_a_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
         let signal_b_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let signal_c_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let signal_d_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        assert_eq!(signaled.signals.lock().unwrap().len(), 4);
 
-        assert!(signaled.combine_signals(&[signal_a_id, signal_b_id, signal_c_id, signal_d_id + 1]).is_err_and(|e| {
-            e == SignaledError::InvalidSignalId { id: signal_d_id + 1 }
+        assert!(signaled.combine_signals(&[signal_a_id, signal_b_id + 1]).is_err_and(|e| {
+            e == SignaledError::InvalidSignalId { id: signal_b_id + 1 }
+        }))
+    }
+
+    #[test]
+    fn test_try_combine_signals_invalid_id_error() {
+        let signaled = Signaled::new(0);
+        let signal_a_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+        let signal_b_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+
+        assert!(signaled.combine_signals(&[signal_a_id, signal_b_id + 1]).is_err_and(|e| {
+            e == SignaledError::InvalidSignalId { id: signal_b_id + 1 }
         }))
     }
 }

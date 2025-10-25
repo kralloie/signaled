@@ -1207,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn test_signal_combine() {
+    fn test_combine() {
         let calls = Rc::new(Cell::new(0));
         let calls_clone = Rc::clone(&calls);
         let signal_a: Signal<i32> = Signal::new(
@@ -1249,7 +1249,7 @@ mod tests {
     }
 
     #[test]
-    fn test_signal_combine_borrow_error() {
+    fn test_combine_borrow_error() {
         {
             let signal_a: Signal<i32> = signal!(|_, _| {});
             let signal_b: Signal<i32> = signal!(|_, _| {});
