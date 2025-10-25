@@ -122,11 +122,11 @@ pub fn new_signal_id() -> SignalId {
 /// signaled.add_signal(signal).unwrap();
 /// signaled.set(42).unwrap(); // Prints "Old: 0 | New: 42"
 /// ```
-pub struct Signal<T> {
+pub struct Signal<T: 'static> {
     /// Function to run when the [`Signal`] is emitted and the trigger condition is met.
-    callback: RefCell<Rc<dyn Fn(&T, &T)>>,
+    callback: RefCell<Rc<dyn Fn(&T, &T) + 'static>>,
     /// Function that decides if the callback will be invoked or not when the [`Signal`] is emitted.
-    trigger: RefCell<Rc<dyn Fn(&T, &T) -> bool>>,
+    trigger: RefCell<Rc<dyn Fn(&T, &T) -> bool + 'static>>,
     /// Identifier for the [`Signal`].
     id: u64,
     /// Number used in the [`Signaled`] struct to decide the order of execution of the signals.
@@ -266,6 +266,90 @@ impl<T> Signal<T> {
     pub fn set_mute(&self, is_mute: bool) {
         self.mute.set(is_mute);
     } 
+
+    /// Combines `N` amount of [`Signal`]s returning a single combined [`Signal`] instance.
+    /// 
+    /// The order in which each `callback` will be called depends on the order that the [`Signal`]s are passed into the argument's slice.
+    /// 
+    /// * `callback` will invoke all callbacks from the combined [`Signal`]s.
+    /// 
+    /// * `trigger` will combine all triggers only returning `true` if every `trigger` does so.
+    /// 
+    /// * `priority` will be the highest `priority` of the provided `signals`.
+    /// 
+    /// * `mute` and `once` will be `false` by default.
+    /// 
+    /// * `id` will be a new unique [`SignalId`].
+    /// 
+    /// # Arguments
+    /// 
+    /// * `signals` A slice containing the [`Signal`]s that will be combined into a single [`Signal`] instance.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns [`SignaledError::BorrowError`] if any of the provided [`Signal`] instances `callback` or `trigger` are mutably borrowed elsewhere.
+    /// 
+    /// # Examples
+    /// ```
+    /// use std::cell::Cell;
+    /// use std::rc::Rc;
+    /// use signaled::{Signal, signal};
+    /// 
+    /// let calls = Rc::new(Cell::new(0));
+    /// 
+    /// let calls_clone = Rc::clone(&calls);
+    /// let signal_a = signal!(move |_, _| calls_clone.set(calls_clone.get() + 1));
+    /// 
+    /// let calls_clone = Rc::clone(&calls);
+    /// let signal_b = signal!(move |_, _| calls_clone.set(calls_clone.get() + 2));
+    /// 
+    /// let signal_c = Signal::combine(&[signal_a, signal_b]).unwrap();
+    /// 
+    /// signal_c.emit(&(), &()).unwrap();
+    /// assert_eq!(calls.get(), 3); // `signal_a` increases calls by 1 and `signal_b` increases calls by 2 so the `combined` signal increases calls by 3
+    /// ```
+    pub fn combine(signals: &[Signal<T>]) -> Result<Self, SignaledError> {
+        let callbacks: Vec<Rc<dyn Fn(&T, &T) + 'static>> = signals
+            .iter()
+            .map(|signal| {
+                signal.callback
+                    .try_borrow()
+                    .map(|rc| rc.clone())
+                    .map_err(|_| SignaledError::BorrowError { source: ErrorSource::SignalCallback })
+            })
+            .collect::<Result<_, _>>()?;
+
+        let triggers: Vec<Rc<dyn Fn(&T, &T) -> bool + 'static>> = signals
+            .iter()
+            .map(|signal| {
+                signal.trigger
+                    .try_borrow()
+                    .map(|rc| rc.clone())
+                    .map_err(|_| SignaledError::BorrowError { source: ErrorSource::SignalTrigger })
+            })
+            .collect::<Result<_, _>>()?;
+
+        let priority = signals
+            .iter()
+            .max_by_key(|s| s.priority.get())
+            .map(|s| s.priority.get())
+            .unwrap_or(0);
+
+        Ok(Signal {
+            callback: RefCell::new(Rc::new(move |old, new| {
+                for callback in &callbacks {
+                    callback(old, new);
+                }
+            })),
+            trigger: RefCell::new(Rc::new(move |old, new| {
+                triggers.iter().all(|tr| tr(old, new))
+            })),
+            id: new_signal_id(),
+            priority: Cell::new(priority),
+            once: Cell::new(false),
+            mute: Cell::new(false)
+        })
+    }
 }
 
 impl<T> Display for Signal<T> {
@@ -349,7 +433,7 @@ macro_rules! signal {
 /// signaled.add_signal(signal!(|old, new| println!("Old: {} | New: {}", old, new))).unwrap();
 /// signaled.set(42).unwrap(); // Prints "Old: 0 | New: 42"
 /// ```
-pub struct Signaled<T> {
+pub struct Signaled<T: 'static> {
     /// Reactive value, the mutation of this value through `set` will emit all [`Signal`] inside `signals`.
     val: RefCell<T>,
     /// Collection of [`Signal`]s that will be emitted when `val` is changed through `set`.
@@ -653,6 +737,76 @@ impl<T> Signaled<T> {
         }
     }
 
+    /// Combines multiple [`Signal`]s by their `id` into a single [`Signal`].
+    /// 
+    /// This function finds signals by their `id`, removes them from the `Signaled` instance,
+    /// and then uses [`Signal::combine()`] to create a new, single [`Signal`] instance.
+    /// This new combined signal is then added back to the `signals` collection and its new `SignalId` is returned.
+    /// 
+    /// For more details about the combination process,
+    /// see the documentation for [`Signal::combine()`].
+    /// 
+    /// # Arguments
+    /// 
+    /// * `signal_ids` A slice containing the `id`s of the [`Signal`]s that will be combined into a single [`Signal`].
+    /// 
+    /// # Errors
+    /// 
+    /// Returns [`SignaledError::BorrowMutError`] if the `signals` is already borrowed.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the any of the provided `SignalId` does not match any [`Signal`].
+    /// 
+    /// Returns [`SignaledError::BorrowError`] if any of the targeted [`Signal`] instances `callback` or `trigger` are mutably borrowed elsewhere.
+    /// 
+    /// # Examples
+    /// ```
+    /// use std::cell::Cell;
+    /// use std::rc::Rc;
+    /// use signaled::{Signal, Signaled, signal};
+    /// 
+    /// let signaled = Signaled::new(0);
+    /// 
+    /// let calls = Rc::new(Cell::new(0));
+    /// 
+    /// let calls_clone = Rc::clone(&calls);
+    /// let signal_a = signal!(move |_, _| calls_clone.set(calls_clone.get() + 1));
+    /// let signal_a_id = signaled.add_signal(signal_a).unwrap();
+    /// 
+    /// let calls_clone = Rc::clone(&calls);
+    /// let signal_b = signal!(move |_, _| calls_clone.set(calls_clone.get() + 2));
+    /// let signal_b_id = signaled.add_signal(signal_b).unwrap();
+    /// 
+    /// signaled.combine_signals(&[signal_a_id, signal_b_id]).unwrap();
+    /// 
+    /// signaled.set(1).unwrap();
+    /// assert_eq!(calls.get(), 3); // `signal_a` increases calls by 1 and `signal_b` increases calls by 2 so the `combined` signal increases calls by 3
+    /// ```
+    pub fn combine_signals(&self, signal_ids: &[SignalId]) -> Result<SignalId, SignaledError> {
+        let mut target_signals = Vec::new();
+        let mut signals = self.signals
+            .try_borrow_mut()
+            .map_err(|_| SignaledError::BorrowMutError { source: ErrorSource::Signals })?;
+
+        for &id in signal_ids {
+            if !signals.iter().any(|s| s.id == id) {
+                return Err(SignaledError::InvalidSignalId { id: id })
+            }
+        }
+
+        for &id in signal_ids {
+            let index = signals
+                .iter()
+                .position(|s| s.id == id)
+                .ok_or_else(|| SignaledError::InvalidSignalId { id: id })?;
+            let signal = signals.remove(index);
+            target_signals.push(signal);
+        }
+
+        let combined_signal = Signal::combine(&target_signals)?;
+        let id = combined_signal.id;
+        signals.push(combined_signal);
+        Ok(id)
+    }
 }
 
 impl<T: Display> Display for Signaled<T> {
@@ -885,6 +1039,7 @@ mod tests {
     test_signaled_borrow_error!(test_set_signal_priority_borrow_error, signals, borrow_mut, set_signal_priority, 1; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
     test_signaled_borrow_error!(test_set_signal_once_borrow_error, signals, borrow_mut, set_signal_once, true; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
     test_signaled_borrow_error!(test_set_signal_mute_borrow_error, signals, borrow_mut, set_signal_mute, true; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
+    test_signaled_borrow_error!(test_combine_signals_borrow_error, signals, borrow, combine_signals, &[1, 2]; SignaledError::BorrowMutError { source: ErrorSource::Signals });
 
     macro_rules! test_signal_borrow_error {
         ($test_name:ident, $borrow:ident, $borrow_type:ident, $method:ident $(, $args:expr)*; $error:expr) => {
@@ -1021,5 +1176,92 @@ mod tests {
         signaled.set_silent(2).unwrap();
         assert_eq!(signaled.get().unwrap(), 2);
         assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn test_signal_combine() {
+        let calls = Rc::new(Cell::new(0));
+        let calls_clone = Rc::clone(&calls);
+        let signal_a: Signal<i32> = Signal::new(
+            move |_, _| { calls_clone.set(calls_clone.get() + 1) },
+            |_, new| { *new > 10 },
+            100,
+            false,
+            false
+        );
+
+        let calls_clone = Rc::clone(&calls);
+        let signal_b: Signal<i32> = Signal::new(
+            move |_, _| { calls_clone.set(calls_clone.get() + 2) },
+            |old, _| { *old > 10 },
+            10,
+            false,
+            false
+        );
+
+        signal_a.emit(&0, &9).unwrap(); // `new` < 10, Calls = 0
+        assert_eq!(calls.get(), 0);
+        signal_a.emit(&0, &11).unwrap(); // `new` > 10, Calls = 1
+        assert_eq!(calls.get(), 1);
+
+        signal_b.emit(&9, &0).unwrap(); // `old` < 10, Calls = 1
+        assert_eq!(calls.get(), 1);
+        signal_b.emit(&11, &0).unwrap(); // `old` > 10, Calls = 3
+        assert_eq!(calls.get(), 3);
+
+        let signal_c = Signal::combine(&[signal_a, signal_b]).unwrap();
+        assert_eq!(signal_c.priority.get(), 100); // Keeps the highest priority after combining
+
+        signal_c.emit(&9, &9).unwrap(); // Both triggers return false
+        assert_eq!(calls.get(), 3);
+        signal_c.emit(&9, &11).unwrap(); // One triggers return false
+        assert_eq!(calls.get(), 3);
+        signal_c.emit(&11, &11).unwrap(); // Both triggers return true, Calls = 6
+        assert_eq!(calls.get(), 6);
+    }
+
+    #[test]
+    fn test_signal_combine_borrow_error() {
+        {
+            let signal_a: Signal<i32> = signal!(|_, _| {});
+            let signal_b: Signal<i32> = signal!(|_, _| {});
+            let signals_to_combine = vec![signal_a, signal_b];
+            let _borrow = signals_to_combine[0].callback.borrow_mut();
+            assert!(Signal::combine(&signals_to_combine).is_err_and(|e| e == SignaledError::BorrowError { source: ErrorSource::SignalCallback }));
+        }
+        {
+            let signal_a: Signal<i32> = signal!(|_, _| {});
+            let signal_b: Signal<i32> = signal!(|_, _| {});
+            let signals_to_combine = vec![signal_a, signal_b];
+            let _borrow = signals_to_combine[0].trigger.borrow_mut();
+            assert!(Signal::combine(&signals_to_combine).is_err_and(|e| e == SignaledError::BorrowError { source: ErrorSource::SignalTrigger }));
+        }
+    }
+
+    #[test]
+    fn test_combine_signals() {
+        let signaled = Signaled::new(0);
+        let signal_a_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
+        let signal_b_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
+        let signal_c_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
+        let signal_d_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
+        assert_eq!(signaled.signals.borrow().len(), 4);
+
+        signaled.combine_signals(&[signal_a_id, signal_b_id, signal_c_id, signal_d_id]).unwrap();
+        assert_eq!(signaled.signals.borrow().len(), 1);
+    }
+
+    #[test]
+    fn test_combine_signals_invalid_id_error() {
+        let signaled = Signaled::new(0);
+        let signal_a_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
+        let signal_b_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
+        let signal_c_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
+        let signal_d_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
+        assert_eq!(signaled.signals.borrow().len(), 4);
+
+        assert!(signaled.combine_signals(&[signal_a_id, signal_b_id, signal_c_id, signal_d_id + 1]).is_err_and(|e| {
+            e == SignaledError::InvalidSignalId { id: signal_d_id + 1 }
+        }))
     }
 }
