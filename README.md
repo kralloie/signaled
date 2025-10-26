@@ -10,69 +10,112 @@
 </div>
 <br>
 
-A lightweight reactive programming library for Rust, providing a signal-slot mechanism.
-`Signaled<T>` holds a value of type `T` and a collection of `Signal<T>` instances, which are
-callbacks triggered when the value changes. Signals support priorities and conditional triggers,
-making it ideal for reactive UI updates, event handling, or state management.
+A lightweight reactive programming library for Rust, providing a signal-slot mechanism. `Signaled<T>` holds a value and emits signals to registered callbacks when the value changes.
+
+This library comes in two versions:
+- **`signaled::sync`**: A thread-safe implementation using `RwLock` and `Mutex`. Recommended for most applications.
+- **`signaled`**: A single-threaded implementation using `RefCell`. Ideal for contexts where thread safety is not required.
 
 ## Features
 
 - **Reactive Updates**: Update a value and automatically emit signals to registered callbacks.
 - **Priority-Based Signals**: Signals are executed in descending priority order.
 - **Conditional Triggers**: Signals can have trigger functions to control callback execution.
-- **One-Time Signals**: Signals can be flagged as `once` making them only be called once and then removed from the Signaled Signal collection.
-- **Safe Mutability**: Uses `RefCell` for interior mutability with runtime borrow checking.
-- **Error Handling**: Returns `Result` with `SignaledError` for borrow conflicts and invalid signal IDs.
-- **Multi-threading**: `signaled::sync` inner module with thread-safe versions of `Signaled` and `Signal`.
+- **One-Time Signals**: Signals can be flagged as `once`. A `once` signal is automatically removed after its callback is successfully executed (i.e., when its trigger condition is met).
 
-## Limitations
+---
 
-- Recursive calls to `set` or `emit` in signal callbacks may cause borrow errors.
-- Re-entrant calls (e.g. calling `set` from within the callback of a `Signal<T>`) may panic due borrow errors.
+## Thread-Safe Usage (`signaled::sync`)
 
-## Examples
+The `sync` module provides a fully thread-safe implementation suitable for multi-threaded applications. It uses `RwLock` and `Mutex` for interior mutability.
 
-Basic usage to create a `Signaled<i32>`, add a signal, and emit changes:
+### Example
 
 ```rust
-use signaled::{Signaled, Signal, SignaledError, signal};
+use signaled::sync::{Signaled, Signal};
+use signaled::signal_sync;
+use std::sync::{Arc, Mutex};
 
-let signaled = Signaled::new(0);
-let signal = signal!(|old: &i32, new: &i32| println!("Old: {} | New: {}", old, new));
+let signaled = Arc::new(Signaled::new(0));
+let calls = Arc::new(Mutex::new(0));
+
+let calls_clone = Arc::clone(&calls);
+let signal = signal_sync!(move |old: &i32, new: &i32| {
+    println!("Value changed: {} -> {}", old, new);
+    let mut lock = calls_clone.lock().unwrap();
+    *lock += 1;
+});
+
 signaled.add_signal(signal).unwrap();
-signaled.set(42).unwrap(); // Prints "Old: 0 | New: 42"
+
+// Set the value from different threads
+let threads: Vec<_> = (1..=3).map(|i| {
+    let signaled_clone = Arc::clone(&signaled);
+    std::thread::spawn(move || {
+        signaled_clone.set(i).unwrap();
+    })
+}).collect();
+
+for handle in threads {
+    handle.join().unwrap();
+}
+
+assert_eq!(*calls.lock().unwrap(), 3);
+println!("Final value: {}", signaled.get().unwrap());
 ```
 
-Using priorities and triggers:
+### Error Handling (`sync`)
+
+Methods may return `SignaledError` for:
+- `PoisonedLock`: Attempted to acquire a poisoned `RwLock` or `Mutex`.
+- `WouldBlock`: A `try_` method failed to acquire a lock immediately.
+- `InvalidSignalId`: Provided a `Signal` ID that does not exist.
+
+### ⚠️ Deadlock Warning
+Incorrectly managing locks can lead to deadlocks. For example, holding a read lock on the `Signaled` value while trying to call `set` from the same thread will deadlock. Non-blocking `try_*` methods are provided as an alternative.
+
+---
+
+## Single-Threaded Usage (`signaled`)
+
+This is a high-performance version for single-threaded contexts. It uses `RefCell` for interior mutability and provides runtime borrow checking.
+
+### Example
 
 ```rust
-use signaled::{Signaled, Signal, SignaledError, signal};
+use signaled::{Signaled, Signal, signal};
 
 let signaled = Signaled::new(0);
 let high_priority = signal!(|old: &i32, new: &i32| println!("High: Old: {}, New: {}", old, new));
 high_priority.set_priority(10);
+
 let conditional = signal!(|old: &i32, new: &i32| println!("Conditional: Old: {}, New: {}", old, new));
 conditional.set_trigger(|old: &i32, new: &i32| *new > *old + 5).unwrap();
+
 signaled.add_signal(high_priority).unwrap();
 signaled.add_signal(conditional).unwrap();
-signaled.set(10).unwrap(); // Prints "High: Old: 0, New: 10" and "Conditional: Old: 0, New: 10"
-signaled.set(3).unwrap(); // Prints only "High: Old: 10, New: 3"
+
+signaled.set(10).unwrap();
+signaled.set(3).unwrap();
 ```
 
-## Error Handling
+<details>
+<summary>Console Output</summary>
 
-Methods like `set`, `emit`, and `remove_signal` return `Result` with `SignaledError` for:
+```console
+High: Old: 0, New: 10
+Conditional: Old: 0, New: 10
+High: Old: 10, New: 3
+```
+
+</details>
+
+### Error Handling (Single-Threaded)
+
+Methods may return `SignaledError` for:
 - `BorrowError`: Attempted to immutably borrow a value already mutably borrowed.
 - `BorrowMutError`: Attempted to mutably borrow a value already borrowed.
 - `InvalidSignalId`: Provided a `Signal` ID that does not exist.
 
-```rust
-use signaled::{Signaled, SignaledError, ErrorSource};
-let signaled = Signaled::new(0);
-let _borrow = signaled.get_ref().unwrap();
-let result = signaled.set(1);
-assert!(matches!(
-    result,
-    Err(SignaledError::BorrowMutError { source }) if source == ErrorSource::Value
-));
-```
+### ⚠️ Re-entrant Calls
+Recursive or re-entrant calls (e.g., calling `set` from within a signal's callback) may cause a panic due to `RefCell` borrow errors.
