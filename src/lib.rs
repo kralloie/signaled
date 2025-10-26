@@ -30,7 +30,7 @@ pub enum SignaledError {
     InvalidSignalId { id: SignalId }
 }
 
-type SignalId = u64;
+pub type SignalId = u64;
 
 static SIGNAL_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
