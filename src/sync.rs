@@ -1,85 +1,4 @@
-//! # Signaled (Sync)
-//!
-//! A lightweight reactive programming library for Rust, providing a signal-slot mechanism.
-//! `Signaled<T>` holds a value of type `T` and a collection of `Signal<T>` instances, which are
-//! callbacks triggered when the value changes. Signals support priorities and conditional triggers,
-//! making it ideal for reactive UI updates, event handling, or state management.
-//!
-//! ## Features
-//!
-//! - **Reactive Updates**: Update a value and automatically emit signals to registered callbacks.
-//! - **Priority-Based Signals**: Signals are executed in descending priority order.
-//! - **Conditional Triggers**: Signals can have trigger functions to control callback execution.
-//! - **One-Time Signals**: Signals can be flagged as `once`. A `once` signal is automatically removed after its callback is successfully executed (i.e., when its trigger condition is met). If the trigger is not met, the signal is retained for future emissions.
-//! - **Safe Mutability**: Uses `Mutex` and `RwLock` for interior mutability.
-//! - **Error Handling**: Returns `Result` with `SignaledError` for poisoned locks and invalid signal IDs.
-//!
-//! ## Limitations
-//!
-//! - Recursive calls to `set` or `emit` in signal callbacks may result in a deadlock.
-//! - Re-entrant calls (e.g. calling `set` from within the callback of a `Signal<T>`) may result in a deadlock.
-//!
-//! ## Examples
-//!
-//! Basic usage to create a `Signaled<i32>`, add a signal, and emit changes:
-//!
-//! ```
-//! use signaled::{signal_sync, sync::{Signal, SignaledError, Signaled}};
-//!
-//! let signaled = Signaled::new(0);
-//! let signal = signal_sync!(|old: &i32, new: &i32| println!("Old: {} | New: {}", old, new));
-//! signaled.add_signal(signal).unwrap();
-//! signaled.set(42).unwrap(); // Prints "Old: 0 | New: 42"
-//! ```
-//!
-//! Using priorities and triggers:
-//!
-//! ```
-//! use signaled::{signal_sync, sync::{Signal, SignaledError, Signaled}};
-//!
-//! let signaled = Signaled::new(0);
-//! let high_priority = signal_sync!(|old: &i32, new: &i32| println!("High: Old: {}, New: {}", old, new));
-//! high_priority.set_priority(10);
-//! let conditional = signal_sync!(|old: &i32, new: &i32| println!("Conditional: Old: {}, New: {}", old, new));
-//! conditional.set_trigger(|old: &i32, new: &i32| *new > *old + 5).unwrap();
-//! signaled.add_signal(high_priority).unwrap();
-//! signaled.add_signal(conditional).unwrap();
-//! signaled.set(10).unwrap(); // Prints "High: Old: 0, New: 10" and "Conditional: Old: 0, New: 10"
-//! signaled.set(3).unwrap(); // Prints only "High: Old: 10, New: 3"
-//! ```
-//!
-//! ## Error Handling
-//!
-//! Methods like `set`, `emit`, and `remove_signal` return `Result` with `SignaledError` for:
-//! - `PoisonedLock`: Attempted to acquire a poisoned lock from `Mutex` or `RwLock`.
-//! - `InvalidSignalId`: Provided a `Signal` ID that does not exist.
-//! - `WouldBlock`: Attempted to acquire a lock that is held elsewhere.
-//! 
-//! ```
-//! use signaled::sync::{SignaledError, ErrorSource, Signaled};
-//!
-//! let signaled = Signaled::new(0);
-//! let read_lock = signaled.get_lock().unwrap();
-//! let result = signaled.try_set(1);
-//! assert!(matches!(
-//!     result,
-//!     Err(SignaledError::WouldBlock { source }) if source == ErrorSource::Value
-//! ));
-//! ```
-//! 
-//! ## Deadlock risk
-//!
-//! The wrong usage of functions like `set`, `emit_signals` and similar functions that acquire locks for `Signaled` and `Signal` properties, may lead to a deadlock.
-//! 
-//! ```
-//! use signaled::sync::{SignaledError, ErrorSource, Signaled};
-//!
-//! let signaled = Signaled::new(0);
-//! let read_lock = signaled.get_lock().unwrap();
-//! // let result = signaled.set(1).unwrap(); Since we hold the lock in the `read_lock` variable, calling `set` will try to acquire the lock resulting in a deadlock.
-//! ```
-
-#![allow(dead_code)]
+#![doc = include_str!("../README.md")]
 use std::fmt::{Debug, Display};
 use std::sync::{RwLock, RwLockReadGuard, TryLockError};
 use std::sync::{Arc, Mutex, atomic::{AtomicU64, AtomicBool, Ordering}};
@@ -2589,6 +2508,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn test_try_combine_poisoned_lock_error() {
         {
             combine_poisoned_lock!(try_combine, callback, SignaledError::PoisonedLock { source: ErrorSource::SignalCallback });
