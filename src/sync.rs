@@ -133,7 +133,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_emit`].
+    /// For a non-blocking alternative, see [`Signal::try_emit`].
     pub fn emit(&self, old: &T, new: &T) -> Result<(), SignaledError> {
         if self.mute.load(Ordering::Relaxed) {
             return Ok(())
@@ -150,7 +150,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
 
     /// Emits the signal, executing the callback if the trigger condition is met.
     /// 
-    /// This function unlike [`emit`], is non-blocking so there are no re-entrant calls that block until the `trigger` and `callback` locks can be acquired.
+    /// This function unlike [`Signal::emit`], is non-blocking so there are no re-entrant calls that block until the `trigger` and `callback` locks can be acquired.
     ///
     /// # Arguments
     ///
@@ -211,7 +211,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_set_callback`].
+    /// For a non-blocking alternative, see [`Signal::try_set_callback`].
     pub fn set_callback<F: Fn(&T, &T) + Send + Sync + 'static>(&self, callback: F) -> Result<(), SignaledError> {
         let mut lock = self.callback.write().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalCallback })?;
         *lock = Arc::new(callback);
@@ -220,7 +220,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     
     /// Sets a new callback for the [`Signal`].
     /// 
-    /// This function unlike [`set_callback`], is non-blocking so there are no re-entrant calls that block until the `callback` lock can be acquired.
+    /// This function unlike [`Signal::set_callback`], is non-blocking so there are no re-entrant calls that block until the `callback` lock can be acquired.
     /// 
     /// # Arguments
     /// 
@@ -258,7 +258,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_set_trigger`]
+    /// For a non-blocking alternative, see [`Signal::try_set_trigger`]
     pub fn set_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(&self, trigger: F) -> Result<(), SignaledError> {
         let mut lock = self.trigger.write().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })?;
         *lock = Arc::new(trigger);
@@ -267,7 +267,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
 
     /// Sets a new trigger for the [`Signal`].
     /// 
-    /// This function unlike [`set_trigger`], is non-blocking so there are no re-entrant calls that block until the `trigger` lock can be acquired.
+    /// This function unlike [`Signal::set_trigger`], is non-blocking so there are no re-entrant calls that block until the `trigger` lock can be acquired.
     /// 
     /// Default trigger always returns `true`.
     /// 
@@ -301,7 +301,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative see [`try_remove_trigger`]
+    /// For a non-blocking alternative see [`Signal::try_remove_trigger`]
     pub fn remove_trigger(&self) -> Result<(), SignaledError> {
         let mut lock = self.trigger.write().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })?;
         *lock = Arc::new(|_, _| true);
@@ -310,7 +310,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
 
     /// Sets the [`Signal`] `trigger` to always return true.
     /// 
-    /// This function unlike [`remove_trigger`], is non-blocking so there are no re-entrant calls that block until the `trigger` lock can be acquired.
+    /// This function unlike [`Signal::remove_trigger`], is non-blocking so there are no re-entrant calls that block until the `trigger` lock can be acquired.
     /// 
     /// # Errors
     /// 
@@ -401,7 +401,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_combine`].
+    /// For a non-blocking alternative, see [`Signal::try_combine`].
     pub fn combine(signals: &[Signal<T>]) -> Result<Self, SignaledError> {
         let callbacks: Vec<Arc<dyn Fn(&T, &T) + Send + Sync + 'static>> = signals
             .iter()
@@ -448,7 +448,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
 
     /// Combines `N` amount of [`Signal`]s returning a single combined [`Signal`] instance.
     /// 
-    /// This function unlike [`combine`], is non-blocking so there are no re-entrant calls that block until the `callback` and `trigger` locks can be acquired.
+    /// This function unlike [`Signal::combine`], is non-blocking so there are no re-entrant calls that block until the `callback` and `trigger` locks can be acquired.
     /// 
     /// The order in which each `callback` will be called depends on the order that the [`Signal`]s are passed into the argument's slice.
     /// 
@@ -688,7 +688,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_set`].
+    /// For a non-blocking alternative, see [`Signaled::try_set`].
     pub fn set(&self, new_value: T) -> Result<(), SignaledError> {
         let mut guard = self.val
             .write()
@@ -699,7 +699,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
     /// Sets a new value for `val` and emits all [`Signal`]s.
     /// 
-    /// This function unlike [`set`], is non-blocking so there are no re-entrant calls that block until the lock for `val` is acquired.
+    /// This function unlike [`Signaled::set`], is non-blocking so there are no re-entrant calls that block until the lock for `val` is acquired.
     ///
     /// # Arguments
     ///
@@ -763,7 +763,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
     /// Sets a new value for `val` without emitting `signals`.
     ///
-    /// This function unlike [`set_silent`], is non-blocking so there are no re-entrant calls that block until the lock for `val` is acquired.
+    /// This function unlike [`Signaled::set_silent`], is non-blocking so there are no re-entrant calls that block until the lock for `val` is acquired.
     /// 
     /// # Arguments
     ///
@@ -808,7 +808,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_get_lock`].
+    /// For a non-blocking alternative, see [`Signaled::try_get_lock`].
     pub fn get_lock(&self) -> Result<RwLockReadGuard<'_, T>, SignaledError> {
         match self.val.read() {
             Ok(r) => Ok(r),
@@ -818,7 +818,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
     /// Returns the lock of the current value.
     /// 
-    /// This function unlike [`get_lock`], is non-blocking so there are no re-entrant calls that block until the lock is acquired.
+    /// This function unlike [`Signaled::get_lock`], is non-blocking so there are no re-entrant calls that block until the lock is acquired.
     /// 
     /// # Errors
     /// 
@@ -843,7 +843,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_emit_signals`].
+    /// For a non-blocking alternative, see [`Signaled::try_emit_signals`].
     fn emit_signals(&self, old: &T, new: &T) -> Result<(), SignaledError> {
         match self.signals.lock() {
             Ok(mut signals) => {
@@ -870,7 +870,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
     /// Emits all [`Signal`]s in descending priority order, invoking their callbacks if their trigger condition is met.
     /// 
-    /// This function unlike [`emit_signals`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::emit_signals`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
     /// 
     /// # Errors
     /// 
@@ -917,7 +917,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_add_signal`].
+    /// For a non-blocking alternative, see [`Signaled::try_add_signal`].
     pub fn add_signal(&self, signal: Signal<T>) -> Result<SignalId, SignaledError> {
         match self.signals.lock() {
             Ok(mut s) => {
@@ -936,7 +936,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// If a [`Signal`] with the same `id` is already in the collection, returns the existing `id` without adding the [`Signal`] to the collection.
     /// 
-    /// This function unlike [`add_signal`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::add_signal`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
     /// 
     /// # Arguments
     /// * `signal` - The [`Signal`] to add.
@@ -977,7 +977,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_remove_signal`].
+    /// For a non-blocking alternative, see [`Signaled::try_remove_signal`].
     pub fn remove_signal(&self, id: SignalId) -> Result<Signal<T>, SignaledError> {
         match self.signals.lock() {
             Ok(mut s) => {
@@ -993,7 +993,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
     /// Removes a [`Signal`] by `id`, returning the removed [`Signal`].
     /// 
-    /// This function unlike [`remove_signal`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::remove_signal`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
     ///
     /// # Arguments
     ///
@@ -1037,7 +1037,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_set_signal_callback`].
+    /// For a non-blocking alternative, see [`Signaled::try_set_signal_callback`].
     pub fn set_signal_callback<F: Fn(&T, &T) + Send + Sync + 'static>(&self, id: SignalId, callback: F) -> Result<(), SignaledError> {
         let signals = self.signals
             .lock()
@@ -1051,7 +1051,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
     /// Sets the callback for a [`Signal`] by `id`.
     /// 
-    /// This function unlike [`set_signal_callback`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::set_signal_callback`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
     ///
     /// # Arguments
     ///
@@ -1098,7 +1098,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_set_signal_trigger`].
+    /// For a non-blocking alternative, see [`Signaled::try_set_signal_trigger`].
     pub fn set_signal_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(&self, id: SignalId, trigger: F) -> Result<(), SignaledError> {
         let signals = self.signals.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
@@ -1110,7 +1110,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
     /// Sets the trigger condition for a [`Signal`] by `id`.
     ///
-    /// This function unlike [`set_signal_trigger`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::set_signal_trigger`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
     /// 
     /// # Arguments
     ///
@@ -1154,7 +1154,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_remove_signal_trigger`].
+    /// For a non-blocking alternative, see [`Signaled::try_remove_signal_trigger`].
     pub fn remove_signal_trigger(&self, id: SignalId) -> Result<(), SignaledError> {
         let signals = self.signals.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
@@ -1166,7 +1166,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
     /// Sets the [`Signal`] `trigger` to always return true by `id`
     /// 
-    /// This function unlike [`remove_signal_trigger`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::remove_signal_trigger`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
     /// 
     /// # Arguments
     /// 
@@ -1210,7 +1210,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_set_signal_priority`].
+    /// For a non-blocking alternative, see [`Signaled::try_set_signal_priority`].
     pub fn set_signal_priority(&self, id: SignalId, priority: u64) -> Result<(), SignaledError> {
         let signals = self.signals
             .lock()
@@ -1225,7 +1225,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
     /// Sets the priority for a [`Signal`] by `id`.
     ///
-    /// This function unlike [`set_signal_priority`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::set_signal_priority`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
     /// 
     /// # Arguments
     ///
@@ -1273,7 +1273,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_set_signal_once`].
+    /// For a non-blocking alternative, see [`Signaled::try_set_signal_once`].
     pub fn set_signal_once(&self, id: SignalId, is_once: bool) -> Result<(), SignaledError> {
         let signals = self.signals
             .lock()
@@ -1288,7 +1288,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
     /// Sets the `once` flag for a [`Signal`] by `id`.
     ///
-    /// This function unlike [`set_signal_once`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::set_signal_once`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
     /// 
     /// # Arguments
     ///
@@ -1336,7 +1336,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_set_signal_mute`].
+    /// For a non-blocking alternative, see [`Signaled::try_set_signal_mute`].
     pub fn set_signal_mute(&self, id: SignalId, is_mute: bool) -> Result<(), SignaledError> {
         let signals = self.signals
             .lock()
@@ -1351,7 +1351,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     
     /// Sets the `mute` flag for a [`Signal`] by `id`.
     ///
-    /// This function unlike [`set_signal_mute`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::set_signal_mute`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
     /// 
     /// # Arguments
     ///
@@ -1434,7 +1434,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_combine_signals`].
+    /// For a non-blocking alternative, see [`Signaled::try_combine_signals`].
     pub fn combine_signals(&self, signal_ids: &[SignalId]) -> Result<SignalId, SignaledError> {
         let mut target_signals = Vec::new();
         let mut signals = self.signals
@@ -1465,7 +1465,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
     /// Combines multiple [`Signal`]s by their `id` into a single [`Signal`].
     /// 
-    /// This function unlike [`combine_signals`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::combine_signals`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
     /// 
     /// This function finds signals by their `id`, removes them from the `Signaled` instance,
     /// and then uses [`Signal::try_combine()`] to create a new, single [`Signal`] instance.
@@ -1609,7 +1609,7 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a non-blocking alternative, see [`try_set_and_spawn`].
+    /// For a non-blocking alternative, see [`Signaled::try_set_and_spawn`].
     pub fn set_and_spawn(&self, new_value: T) -> Result<JoinHandle<Result<(), SignaledError>>, SignaledError> {
         let mut guard = self.val
             .write()
@@ -1646,7 +1646,7 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     /// 
     /// The returned [`JoinHandle`] will contain a [`SignaledError`] if any [`Signal`] emission failed.
     /// 
-    /// This function unlike [`set_and_spawn`], is non-blocking so there are no re-entrant calls that block until `val` or `signals` lock can be acquired.
+    /// This function unlike [`Signaled::set_and_spawn`], is non-blocking so there are no re-entrant calls that block until `val` or `signals` lock can be acquired.
     ///
     /// # Arguments
     ///
@@ -1719,7 +1719,7 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     /// 
     /// This function may result in a deadlock if used incorrectly.
     /// 
-    /// For a deadlock-safe version, see [`try_get`].
+    /// For a non-blocking alternative, see [`Signaled::try_get`].
     pub fn get(&self) -> Result<T, SignaledError> {
         match self.val.read() {
             Ok(r) => Ok(r.clone()),
@@ -1729,7 +1729,7 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
 
     /// Returns a cloned copy of the current value.
     /// 
-    /// This function unlike [`get`], is non-blocking so there are no re-entrant calls that block until the lock is acquired.
+    /// This function unlike [`Signaled::get`], is non-blocking so there are no re-entrant calls that block until the lock is acquired.
     /// 
     /// # Errors
     /// 
