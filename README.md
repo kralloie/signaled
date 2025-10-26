@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://github.com/kralloie/signaled/blob/main/assets/signaled.svg" width="200">
+<img src="https://github.com/kralloie/signaled/blob/main/assets/signaled.png" width="200">
 
 # Signaled
 
