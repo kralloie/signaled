@@ -10,8 +10,8 @@
 //! - **Reactive Updates**: Update a value and automatically emit signals to registered callbacks.
 //! - **Priority-Based Signals**: Signals are executed in descending priority order.
 //! - **Conditional Triggers**: Signals can have trigger functions to control callback execution.
-//! - **One-Time Signals**: Signals can be flagged as `once` making them only be called once and then removed from the Signaled Signal collection.
-//! - **Safe Mutability**: Uses `Mutex` for interior mutability.
+//! - **One-Time Signals**: Signals can be flagged as `once`. A `once` signal is automatically removed after its callback is successfully executed (i.e., when its trigger condition is met). If the trigger is not met, the signal is retained for future emissions.
+//! - **Safe Mutability**: Uses `Mutex` and `RwLock` for interior mutability.
 //! - **Error Handling**: Returns `Result` with `SignaledError` for poisoned locks and invalid signal IDs.
 //!
 //! ## Limitations
@@ -90,16 +90,23 @@ use std::thread::{JoinHandle};
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum ErrorSource {
+    /// Error coming from [`Signaled`] `value`.
     Value,
+    /// Error coming from [`Signaled`] `signals`.
     Signals,
+    /// Error coming from [`Signal`] `callback`.
     SignalCallback,
+    /// Error coming from [`Signal`] `trigger`.
     SignalTrigger
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum SignaledError {
+    /// Tried to acquire a poisoned lock.
     PoisonedLock { source: ErrorSource },
+    /// Tried to acquire a lock that is held elsewhere.
     WouldBlock { source: ErrorSource },
+    /// The provided `SignalId` does not correspond to any [`Signal`].
     InvalidSignalId { id: SignalId }
 }
 
@@ -107,7 +114,7 @@ type SignalId = u64;
 
 static SIGNAL_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Generates a new [`SignalId`] for a [`Signal`] using the global identifier counter
+/// Generates a new [`SignalId`] for a [`Signal`] using the global identifier counter.
 /// 
 /// # Panics 
 /// 
@@ -141,7 +148,7 @@ pub struct Signal<T: Send + Sync + 'static> {
     id: u64,
     /// Number used in the [`Signaled`] struct to decide the order of execution of the signals.
     priority: AtomicU64,
-    /// Boolean representing if the [`Signal`] should be removed from the Signaled after being called once.
+    /// Boolean representing if the [`Signal`] should be removed from the [`Signaled`] after its callback is successfully invoked once. The removal only occurs if the signal's trigger condition is met during emission.
     once: AtomicBool,
     /// Boolean representing if the [`Signal`] should not invoke the callback when emitted.
     mute: AtomicBool
@@ -155,7 +162,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// * `callback` - Function to execute when the signal is emitted.
     /// * `trigger` -  Function that returns a boolean representing if the `callback` will be invoked or not.
     /// * `priority` - Number representing the priority in which the [`Signal`] will be emitted from the parent [`Signaled`].
-    /// * `once` - Boolean representing if the [`Signal`] will be removed from the parent [`Signaled`] `signals` after being emitted once.
+    /// * `once` - Boolean representing if the [`Signal`] will be removed from the parent [`Signaled`] `signals` after being emitted once. The removal only occurs if the signal's trigger condition is met during emission.
     /// * `mute` - Boolean representing if the `callback` will be invoked or not.
     ///
     /// # Examples
@@ -928,7 +935,15 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 for signal in signals.iter() {
                     signal.emit(old, new)?
                 }
-                signals.retain(|s| !s.once.load(Ordering::Relaxed));
+                signals.retain(|s| {
+                    if !s.once.load(Ordering::Relaxed) {
+                        return true;
+                    }
+                    match s.trigger.read() {
+                        Ok(trigger) => !trigger(old, new),
+                        Err(_) => true,
+                    }
+                });
                 Ok(())
             }
             Err(_) => Err(SignaledError::PoisonedLock { source: ErrorSource::Signals })
@@ -953,7 +968,15 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 for signal in signals.iter() {
                     signal.try_emit(old, new)?
                 }
-                signals.retain(|s| !s.once.load(Ordering::Relaxed));
+                signals.retain(|s| {
+                    if !s.once.load(Ordering::Relaxed) {
+                        return true;
+                    }
+                    match s.trigger.try_read() {
+                        Ok(trigger) => !trigger(old, new),
+                        Err(_) => true,
+                    }
+                });
                 Ok(())
             }
             Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock { source: ErrorSource::Signals }),
@@ -1686,7 +1709,15 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
             for signal in signals.iter() {
                 signal.emit(&old_value, &new_value_clone)?;
             }
-            signals.retain(|s| !s.once.load(Ordering::Relaxed));
+            signals.retain(|s| {
+                if !s.once.load(Ordering::Relaxed) {
+                    return true;
+                }
+                match s.trigger.read() {
+                    Ok(trigger) => !trigger(&old_value, &new_value_clone),
+                    Err(_) => true,
+                }
+            });
             Ok(())
         });
         Ok(handle)
@@ -1746,7 +1777,15 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
             for signal in signals.iter() {
                 signal.try_emit(&old_value, &new_value_clone)?;
             }
-            signals.retain(|s| !s.once.load(Ordering::Relaxed));
+            signals.retain(|s| {
+                if !s.once.load(Ordering::Relaxed) {
+                    return true;
+                }
+                match s.trigger.try_read() {
+                    Ok(trigger) => !trigger(&old_value, &new_value_clone),
+                    Err(_) => true,
+                }
+            });
             Ok(())
         });
         Ok(handle)
@@ -2597,5 +2636,18 @@ mod tests {
         assert!(signaled.combine_signals(&[signal_a_id, signal_b_id + 1]).is_err_and(|e| {
             e == SignaledError::InvalidSignalId { id: signal_b_id + 1 }
         }))
+    }
+
+    #[test]
+    fn test_once_retain() {
+        let signaled = Signaled::new(1);
+        signaled.add_signal(signal_sync!(|_, _| {}, |old, new| *new > *old, 1, true, false)).unwrap();
+        assert_eq!(signaled.signals.lock().unwrap().len(), 1);
+
+        signaled.set(1).unwrap();
+        assert_eq!(signaled.signals.lock().unwrap().len(), 1);
+
+        signaled.set(2).unwrap();
+        assert_eq!(signaled.signals.lock().unwrap().len(), 0);
     }
 }

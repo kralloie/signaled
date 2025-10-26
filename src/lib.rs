@@ -10,7 +10,7 @@
 //! - **Reactive Updates**: Update a value and automatically emit signals to registered callbacks.
 //! - **Priority-Based Signals**: Signals are executed in descending priority order.
 //! - **Conditional Triggers**: Signals can have trigger functions to control callback execution.
-//! - **One-Time Signals**: Signals can be flagged as `once` making them only be called once and then removed from the Signaled Signal collection.
+//! - **One-Time Signals**: Signals can be flagged as `once`. A `once` signal is automatically removed after its callback is successfully executed (i.e., when its trigger condition is met). If the trigger is not met, the signal is retained for future emissions.
 //! - **Safe Mutability**: Uses `RefCell` for interior mutability with runtime borrow checking.
 //! - **Error Handling**: Returns `Result` with `SignaledError` for borrow conflicts and invalid signal IDs.
 //! - **Multi-threading**: `signaled::sync` inner module with thread-safe versions of `Signaled` and `Signal`.
@@ -18,7 +18,7 @@
 //! ## Limitations
 //!
 //! - Recursive calls to `set` or `emit` in signal callbacks may cause borrow errors.
-//! - Re-entrant calls (e.g. calling `set` from within the callback of a `Signal<T>`) may panic due borrow errors.
+//! - Re-entrant calls (e.g. calling `set` from within the callback of a `Signal<T>`) may panic due to borrow errors.
 //!
 //! ## Examples
 //!
@@ -80,16 +80,23 @@ pub mod sync;
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum ErrorSource {
+    /// Error coming from [`Signaled`] `value`.
     Value,
+    /// Error coming from [`Signaled`] `signals`.
     Signals,
+    /// Error coming from [`Signal`] `callback`.
     SignalCallback,
+    /// Error coming from [`Signal`] `trigger`.
     SignalTrigger
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum SignaledError {
+    /// An immutable borrow failed because the value was already mutably borrowed.
     BorrowError { source: ErrorSource },
+    /// A mutable borrow failed because the value was already borrowed.
     BorrowMutError { source: ErrorSource },
+    /// The provided `SignalId` does not correspond to any [`Signal`].
     InvalidSignalId { id: SignalId }
 }
 
@@ -97,7 +104,7 @@ type SignalId = u64;
 
 static SIGNAL_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Generates a new [`SignalId`] for a [`Signal`] using the global identifier counter
+/// Generates a new [`SignalId`] for a [`Signal`] using the global identifier counter.
 /// 
 /// # Panics 
 /// 
@@ -131,7 +138,7 @@ pub struct Signal<T: 'static> {
     id: u64,
     /// Number used in the [`Signaled`] struct to decide the order of execution of the signals.
     priority: Cell<u64>,
-    /// Boolean representing if the [`Signal`] should be removed from the Signaled after being called once.
+    /// Boolean representing if the [`Signal`] should be removed from the [`Signaled`] after its callback is successfully invoked once. The removal only occurs if the signal's trigger condition is met during emission.
     once: Cell<bool>,
     /// Boolean representing if the [`Signal`] should not invoke the callback when emitted.
     mute: Cell<bool>
@@ -145,7 +152,7 @@ impl<T> Signal<T> {
     /// * `callback` - Function to execute when the signal is emitted.
     /// * `trigger` -  Function that returns a boolean representing if the `callback` will be invoked or not.
     /// * `priority` - Number representing the priority in which the [`Signal`] will be emitted from the parent [`Signaled`].
-    /// * `once` - Boolean representing if the [`Signal`] will be removed from the parent [`Signaled`] `signals` after being emitted once.
+    /// * `once` - Boolean representing if the [`Signal`] will be removed from the parent [`Signaled`] `signals` after being emitted once. The removal only occurs if the signal's trigger condition is met during emission.
     /// * `mute` - Boolean representing if the `callback` will be invoked or not.
     ///
     /// # Examples
@@ -553,7 +560,7 @@ impl<T> Signaled<T> {
                 for signal in signals.iter() {
                     signal.emit(old, new)?
                 }
-                signals.retain(|s| !s.once.get());
+                signals.retain(|s| !s.once.get() || (s.once.get() && !(s.trigger.borrow())(old, new)));
                 Ok(())
             }
             Err(_) => Err(SignaledError::BorrowMutError { source: ErrorSource::Signals })
@@ -1292,5 +1299,18 @@ mod tests {
         assert!(signaled.combine_signals(&[signal_a_id, signal_b_id, signal_c_id, signal_d_id + 1]).is_err_and(|e| {
             e == SignaledError::InvalidSignalId { id: signal_d_id + 1 }
         }))
+    }
+
+    #[test]
+    fn test_once_retain() {
+        let signaled = Signaled::new(1);
+        signaled.add_signal(signal!(|_, _| {}, |old, new| *new > *old, 1, true, false)).unwrap();
+        assert_eq!(signaled.signals.borrow().len(), 1);
+
+        signaled.set(1).unwrap();
+        assert_eq!(signaled.signals.borrow().len(), 1);
+
+        signaled.set(2).unwrap();
+        assert_eq!(signaled.signals.borrow().len(), 0);
     }
 }
