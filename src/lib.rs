@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 use std::cell::{Cell, Ref, RefCell};
 use std::rc::Rc;
 use std::fmt::{Debug, Display};

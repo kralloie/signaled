@@ -1,4 +1,3 @@
-#![doc = include_str!("../README.md")]
 use std::fmt::{Debug, Display};
 use std::sync::{RwLock, RwLockReadGuard, TryLockError};
 use std::sync::{Arc, Mutex, atomic::{AtomicU64, AtomicBool, Ordering}};
