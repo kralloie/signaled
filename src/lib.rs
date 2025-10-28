@@ -3,6 +3,7 @@ use std::cell::{Cell, Ref, RefCell};
 use std::rc::Rc;
 use std::fmt::{Debug, Display};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 pub mod sync;
 
@@ -387,7 +388,12 @@ pub struct Signaled<T: 'static> {
     /// Reactive value, the mutation of this value through `set` will emit all [`Signal`] inside `signals`.
     val: RefCell<T>,
     /// Collection of [`Signal`]s that will be emitted when `val` is changed through `set`.
-    signals: RefCell<Vec<Signal<T>>>
+    signals: RefCell<Vec<Signal<T>>>,
+
+    /// Instant to use as reference for throttling.
+    throttle_instant: Cell<Instant>,
+    /// Duration of the throttling.
+    throttle_duration: Cell<Duration>
 }
 
 impl<T> Signaled<T> {
@@ -399,7 +405,9 @@ impl<T> Signaled<T> {
     pub fn new(val: T) -> Self {
         Self {
             val: RefCell::new(val),
-            signals: RefCell::new(Vec::new())
+            signals: RefCell::new(Vec::new()),
+            throttle_instant: Cell::new(Instant::now()),
+            throttle_duration: Cell::new(Duration::ZERO),
         }
     }
 
@@ -461,6 +469,71 @@ impl<T> Signaled<T> {
         *self.val
             .try_borrow_mut()
             .map_err(|_| SignaledError::BorrowMutError { source: ErrorSource::Value })? = new_value;
+        Ok(())
+    }
+
+    /// Sets the minimum [`Duration`] that must elapse between consecutive calls to
+    /// [`Signaled::set_throttled`].
+    ///
+    /// # Arguments
+    ///
+    /// * `duration` - The time interval to wait before another throttled update is allowed.
+    pub fn set_throttle_duration(&self, duration: Duration) {
+        self.throttle_duration.set(duration);
+    }
+
+    /// Sets a new value for `val` and emits all [`Signal`]s, but only if enough time
+    /// has passed since the previous throttled update.
+    ///
+    /// This method uses the configured [`throttle_duration`](Self::set_throttle_duration)
+    /// and the internal `throttle_instant` to prevent signals from being emitted
+    /// more frequently than allowed.
+    /// 
+    /// # Arguments
+    ///
+    /// * `new_value` - The new value of the [`Signaled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError::BorrowMutError`] if `val` is already borrowed.
+    /// 
+    /// Returns [`SignaledError::BorrowMutError`] if `signals` is already borrowed.
+    /// 
+    /// Returns [`SignaledError::BorrowError`] propagated from `signal.emit()` if an individual [`Signal`] callback or trigger is already mutably borrowed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use signaled::{Signaled, Signal, signal};
+    /// use std::time::Duration;
+    /// use std::cell::Cell;
+    /// use std::rc::Rc;
+    ///
+    /// let calls = Rc::new(Cell::new(0));
+    /// let signaled = Signaled::new(());
+    /// signaled.set_throttle_duration(Duration::from_millis(500));
+    ///
+    /// let calls_clone = Rc::clone(&calls);
+    /// signaled.add_signal(signal!(move |_, _| calls_clone.set(calls_clone.get() + 1))).unwrap();
+    ///
+    /// signaled.set_throttled(()).unwrap();
+    /// assert_eq!(calls.get(), 1);
+    /// std::thread::sleep(Duration::from_millis(100));
+    ///
+    /// signaled.set_throttled(()).unwrap();
+    /// assert_eq!(calls.get(), 1);
+    /// std::thread::sleep(Duration::from_millis(500));
+    ///
+    /// signaled.set_throttled(()).unwrap();
+    /// assert_eq!(calls.get(), 2);
+    /// ```
+    pub fn set_throttled(&self, new_value: T) -> Result<(), SignaledError> {
+        if Instant::now() < self.throttle_instant.get() {
+            return Ok(())
+        }
+
+        self.throttle_instant.set(Instant::now() + self.throttle_duration.get());
+        self.set(new_value)?;
         Ok(())
     }
 
@@ -1242,5 +1315,26 @@ mod tests {
 
         signaled.set(2).unwrap();
         assert_eq!(signaled.signals.borrow().len(), 0);
+    }
+
+    #[test]
+    fn test_set_throttled() {
+        let calls = Rc::new(Cell::new(0));
+        let signaled = Signaled::new(());
+        signaled.set_throttle_duration(Duration::from_millis(500));
+
+        let calls_clone = Rc::clone(&calls);
+        signaled.add_signal(signal!(move |_, _| calls_clone.set(calls_clone.get() + 1))).unwrap();
+
+        signaled.set_throttled(()).unwrap();
+        assert_eq!(calls.get(), 1);
+        std::thread::sleep(Duration::from_millis(100));
+
+        signaled.set_throttled(()).unwrap();
+        assert_eq!(calls.get(), 1);
+        std::thread::sleep(Duration::from_millis(500));
+
+        signaled.set_throttled(()).unwrap();
+        assert_eq!(calls.get(), 2);
     }
 }

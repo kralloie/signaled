@@ -3,6 +3,7 @@ use std::sync::{RwLock, RwLockReadGuard, TryLockError};
 use std::sync::{Arc, Mutex, atomic::{AtomicU64, AtomicBool, Ordering}};
 use std::thread;
 use std::thread::{JoinHandle};
+use std::time::{Duration, Instant};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -12,6 +13,10 @@ pub enum ErrorSource {
     Value,
     /// Error coming from [`Signaled`] `signals`.
     Signals,
+    /// Error coming from [`Signaled`] `throttle_instant`.
+    ThrottleInstant,
+    /// Error coming from [`Signaled`] `throttle_duration`.
+    ThrottleDuration,
     /// Error coming from [`Signal`] `callback`.
     SignalCallback,
     /// Error coming from [`Signal`] `trigger`.
@@ -648,7 +653,12 @@ pub struct Signaled<T: Send + Sync + 'static> {
     /// Reactive value, the mutation of this value through `set` will emit all [`Signal`] inside `signals`.
     val: RwLock<T>,
     /// Collection of [`Signal`]s that will be emitted when `val` is changed through `set`.
-    signals: Arc<Mutex<Vec<Signal<T>>>>
+    signals: Arc<Mutex<Vec<Signal<T>>>>,
+
+    /// Instant to use as reference for throttling.
+    throttle_instant: Arc<Mutex<Instant>>,
+    /// Duration of the throttling.
+    throttle_duration: Arc<Mutex<Duration>>
 }
 
 impl<T: Send + Sync + 'static> Signaled<T> {
@@ -660,7 +670,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     pub fn new(val: T) -> Self {
         Self {
             val: RwLock::new(val),
-            signals: Arc::new(Mutex::new(Vec::new()))
+            signals: Arc::new(Mutex::new(Vec::new())),
+            throttle_instant: Arc::new(Mutex::new(Instant::now())),
+            throttle_duration: Arc::new(Mutex::new(Duration::ZERO))
         }
     }
 
@@ -753,6 +765,12 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// signaled.set_silent(1).unwrap(); // This does not emit the signal so "do something" is not printed.
     /// assert_eq!(signaled.get().unwrap(), 1);
     /// ```
+    /// 
+    /// # Warnings
+    /// 
+    /// This function may result in a deadlock if used incorrectly.
+    /// 
+    /// For a non-blocking alternative, see [`Signaled::try_set_silent`].
     pub fn set_silent(&self, new_value: T) -> Result<(), SignaledError> {
         let mut guard = self.val
             .write()
@@ -795,6 +813,155 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 }
             })?;
         *guard = new_value;
+        Ok(())
+    }
+
+    /// Sets the minimum [`Duration`] that must elapse between consecutive calls to
+    /// [`Signaled::set_throttled`].
+    ///
+    /// # Arguments
+    ///
+    /// * `duration` - The time interval to wait before another throttled update is allowed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError::PoisonedLock`] if the `throttle_duration` lock is poisoned.
+    ///
+    /// # Warnings
+    /// 
+    /// This function may result in a deadlock if used incorrectly.
+    /// 
+    /// For a non-blocking alternative, see [`Signaled::try_set_throttle_duration`].
+    pub fn set_throttle_duration(&self, duration: Duration) -> Result<(), SignaledError>{
+        *self.throttle_duration.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration })? = duration;
+        Ok(())
+    }
+
+    /// Sets the minimum [`Duration`] that must elapse between consecutive calls to
+    /// [`Signaled::set_throttled`].
+    /// 
+    /// This function unlike [`Signaled::set_throttle_duration`], is non-blocking so there are no re-entrant calls that block until the lock can be acquired.
+    ///
+    /// # Arguments
+    ///
+    /// * `duration` - The time interval to wait before another throttled update is allowed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError::PoisonedLock`] if the `throttle_duration` lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the `throttle_duration` lock is held elsewhere.
+    pub fn try_set_throttle_duration(&self, duration: Duration) -> Result<(), SignaledError>{
+        *self.throttle_duration.try_lock().map_err(|e| {
+            match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration },
+                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleDuration }
+            }   
+        })? = duration;
+        Ok(())
+    }
+
+    /// Sets a new value for `val` and emits all [`Signal`]s, but only if enough time
+    /// has passed since the previous throttled update.
+    ///
+    /// This method uses the configured [`throttle_duration`](Self::set_throttle_duration)
+    /// and the internal `throttle_instant` to prevent signals from being emitted
+    /// more frequently than allowed.
+    /// 
+    /// # Arguments
+    ///
+    /// * `new_value` - The new value of the [`Signaled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
+    /// `throttle_instant`, `throttle_duration`, `val`, or `signals` are poisoned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use signaled::{sync::{Signaled, Signal}, signal_sync};
+    /// use std::sync::{Arc, Mutex};
+    /// use std::time::Duration;
+    ///
+    /// let calls = Arc::new(Mutex::new(0));
+    /// let signaled = Signaled::new(());
+    /// signaled.set_throttle_duration(Duration::from_millis(500)).unwrap();
+    ///
+    /// let calls_clone = Arc::clone(&calls);
+    /// signaled.add_signal(signal_sync!(move |_, _| {
+    ///     let mut lock = calls_clone.lock().unwrap();
+    ///     *lock += 1;
+    /// })).unwrap();
+    ///
+    /// signaled.set_throttled(()).unwrap();
+    /// assert_eq!(*calls.lock().unwrap(), 1);
+    /// std::thread::sleep(Duration::from_millis(100));
+    ///
+    /// signaled.set_throttled(()).unwrap();
+    /// assert_eq!(*calls.lock().unwrap(), 1);
+    /// std::thread::sleep(Duration::from_millis(500));
+    ///
+    /// signaled.set_throttled(()).unwrap();
+    /// assert_eq!(*calls.lock().unwrap(), 2);
+    /// ```
+    ///
+    /// # Warnings
+    /// 
+    /// This function may result in a deadlock if used incorrectly.
+    /// 
+    /// For a non-blocking alternative, see [`Signaled::try_set_throttled`].
+    pub fn set_throttled(&self, new_value: T) -> Result<(), SignaledError> {
+        let mut throttle_instant = self.throttle_instant.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant })?;
+        if Instant::now() < *throttle_instant {
+            return Ok(())
+        }
+        *throttle_instant = Instant::now() + *self.throttle_duration.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration })?;
+        drop(throttle_instant);
+
+        self.set(new_value)?;
+        Ok(())
+    }
+
+    /// Sets a new value for `val` and emits all [`Signal`]s, but only if enough time
+    /// has passed since the previous throttled update.
+    /// 
+    /// This function unlike [`Signaled::set_throttled`], is non-blocking so there are no re-entrant calls that block until a lock can be acquired.
+    ///
+    /// This method uses the configured [`throttle_duration`](Self::set_throttle_duration)
+    /// and the internal `throttle_instant` to prevent signals from being emitted
+    /// more frequently than allowed.
+    /// 
+    /// # Arguments
+    ///
+    /// * `new_value` - The new value of the [`Signaled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
+    /// `throttle_instant`, `throttle_duration`, `val`, or `signals` are poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if any of the underlying locks for
+    /// `throttle_instant`, `throttle_duration`, `val`, or `signals` are held elsewhere.
+    pub fn try_set_throttled(&self, new_value: T) -> Result<(), SignaledError> {
+        let mut throttle_instant = self.throttle_instant.try_lock().map_err(|e| {
+            match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant },
+                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleInstant }
+            }
+        })?;
+        if Instant::now() < *throttle_instant {
+            return Ok(())
+        }
+        *throttle_instant = Instant::now() + *self.throttle_duration.try_lock().map_err(|e| {
+            match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration },
+                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleDuration }
+            }
+        })?;
+        drop(throttle_instant);
+
+        self.try_set(new_value)?;
         Ok(())
     }
 
@@ -1709,6 +1876,177 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
         Ok(handle)
     }
 
+    /// Sets a new value for `val` and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread,
+    /// but only if enough time has passed since the previous throttled update.
+    /// 
+    /// This method uses the configured [`throttle_duration`](Self::set_throttle_duration)
+    /// and the internal `throttle_instant` to prevent signals from being emitted
+    /// more frequently than allowed.
+    /// 
+    /// The returned [`JoinHandle`] will contain a [`SignaledError`] if any [`Signal`] emission failed.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_value` - The new value of the [`Signaled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for 
+    /// `throttle_instant`, `throttle_duration`, `val` or `signals` locks are poisoned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use signaled::{sync::{Signaled, Signal}, signal_sync};
+    /// use std::sync::{Arc, Mutex};
+    /// use std::time::Duration;
+    ///
+    /// let calls = Arc::new(Mutex::new(0));
+    /// let signaled = Signaled::new(());
+    /// signaled.set_throttle_duration(Duration::from_millis(500)).unwrap();
+    ///
+    /// let calls_clone = Arc::clone(&calls);
+    /// signaled.add_signal(signal_sync!(move |_, _| {
+    ///     let mut lock = calls_clone.lock().unwrap();
+    ///     *lock += 1;
+    /// })).unwrap();
+    ///
+    /// signaled.set_throttled_and_spawn(()).unwrap().join().unwrap().unwrap();
+    /// assert_eq!(*calls.lock().unwrap(), 1);
+    /// std::thread::sleep(Duration::from_millis(100));
+    ///
+    /// signaled.set_throttled_and_spawn(()).unwrap().join().unwrap().unwrap();
+    /// assert_eq!(*calls.lock().unwrap(), 1);
+    /// std::thread::sleep(Duration::from_millis(500));
+    ///
+    /// signaled.set_throttled_and_spawn(()).unwrap().join().unwrap().unwrap();
+    /// assert_eq!(*calls.lock().unwrap(), 2);
+    /// ```
+    /// 
+    /// # Warnings
+    /// 
+    /// This function may result in a deadlock if used incorrectly.
+    /// 
+    /// For a non-blocking alternative, see [`Signaled::try_set_throttled_and_spawn`].
+    pub fn set_throttled_and_spawn(&self, new_value: T) -> Result<JoinHandle<Result<(), SignaledError>>, SignaledError> {
+        let mut throttle_instant = self.throttle_instant.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant })?;
+        if Instant::now() < *throttle_instant {
+            return Ok(thread::spawn(|| Ok(())))
+        }
+        *throttle_instant = Instant::now() + *self.throttle_duration.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration })?;
+        drop(throttle_instant);
+
+        let mut guard = self.val
+            .write()
+            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Value })?;
+        let old_value = std::mem::replace(&mut *guard, new_value);
+        let new_value_clone = (*guard).clone();
+        drop(guard);
+
+        let signals_clone = Arc::clone(&self.signals);
+        let handle = thread::spawn(move || -> Result<(), SignaledError> {
+            let mut signals = signals_clone.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
+            signals.sort_by(|a, b| { 
+                b.priority.load(Ordering::Relaxed).cmp(&a.priority.load(Ordering::Relaxed))
+            });
+            for signal in signals.iter() {
+                signal.emit(&old_value, &new_value_clone)?;
+            }
+            signals.retain(|s| {
+                if !s.once.load(Ordering::Relaxed) {
+                    return true;
+                }
+                match s.trigger.read() {
+                    Ok(trigger) => !trigger(&old_value, &new_value_clone),
+                    Err(_) => true,
+                }
+            });
+            Ok(())
+        });
+        Ok(handle)
+    }
+
+
+    /// Sets a new value for `val` and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread,
+    /// but only if enough time has passed since the previous throttled update.
+    /// 
+    /// This function unlike [`Signaled::set_throttled_and_spawn`], is non-blocking so there are no re-entrant calls that block until the lock can be acquired.
+    /// 
+    /// This method uses the configured [`throttle_duration`](Self::set_throttle_duration)
+    /// and the internal `throttle_instant` to prevent signals from being emitted
+    /// more frequently than allowed.
+    /// 
+    /// The returned [`JoinHandle`] will contain a [`SignaledError`] if any [`Signal`] emission failed.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_value` - The new value of the [`Signaled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for 
+    /// `throttle_instant`, `throttle_duration`, `val` or `signals` locks are poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if any of the underlying locks for 
+    /// `throttle_instant`, `throttle_duration`, `val` or `signals` locks are held elsewhere.
+    pub fn try_set_throttled_and_spawn(&self, new_value: T) -> Result<JoinHandle<Result<(), SignaledError>>, SignaledError> {
+        let mut throttle_instant = self.throttle_instant.try_lock().map_err(|e| {
+            match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant },
+                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleInstant }
+            }
+        })?;
+        if Instant::now() < *throttle_instant {
+            return Ok(thread::spawn(|| Ok(())))
+        }
+        *throttle_instant = Instant::now() + *self.throttle_duration.try_lock().map_err(|e| {
+            match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration },
+                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleDuration }
+            }
+        })?;
+        drop(throttle_instant);
+
+        let mut guard = self.val
+            .try_write()
+            .map_err(|e| {
+                match e {
+                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Value },
+                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Value }
+                }
+            })?;
+        let old_value = std::mem::replace(&mut *guard, new_value);
+        let new_value_clone = (*guard).clone();
+        drop(guard);
+
+        let signals_clone = Arc::clone(&self.signals);
+        let handle = thread::spawn(move || -> Result<(), SignaledError> {
+            let mut signals = signals_clone.try_lock().map_err(|e| {
+                match e {
+                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
+                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
+                }
+            })?;
+            signals.sort_by(|a, b| { 
+                b.priority.load(Ordering::Relaxed).cmp(&a.priority.load(Ordering::Relaxed))
+            });
+            for signal in signals.iter() {
+                signal.try_emit(&old_value, &new_value_clone)?;
+            }
+            signals.retain(|s| {
+                if !s.once.load(Ordering::Relaxed) {
+                    return true;
+                }
+                match s.trigger.try_read() {
+                    Ok(trigger) => !trigger(&old_value, &new_value_clone),
+                    Err(_) => true,
+                }
+            });
+            Ok(())
+        });
+        Ok(handle)
+    }
+
     /// Returns a cloned copy of the current value.
     ///
     /// # Errors
@@ -2149,7 +2487,9 @@ mod tests {
 
     test_signaled_would_block_error!(test_try_set_would_block_error, val, read, try_set, 1; SignaledError::WouldBlock { source: ErrorSource::Value });
     test_signaled_would_block_error!(test_try_set_silent_would_block_error, val, read, try_set_silent, 1; SignaledError::WouldBlock { source: ErrorSource::Value });
+    test_signaled_would_block_error!(test_try_set_throttled_would_block_error, throttle_instant, lock, try_set_throttled, 1; SignaledError::WouldBlock { source: ErrorSource::ThrottleInstant });
     test_signaled_would_block_error!(test_try_set_and_spawn_would_block_error, val, read, try_set_and_spawn, 1; SignaledError::WouldBlock { source: ErrorSource::Value });
+    test_signaled_would_block_error!(test_try_set_throttled_and_spawn_would_block_error, throttle_instant, lock, try_set_throttled_and_spawn, 1; SignaledError::WouldBlock { source: ErrorSource::ThrottleInstant });
     test_signaled_would_block_error!(test_try_get_would_block_error, val, write, try_get; SignaledError::WouldBlock { source: ErrorSource::Value });
     test_signaled_would_block_error!(test_try_get_lock_would_block_error, val, write, try_get_lock; SignaledError::WouldBlock { source: ErrorSource::Value });
     test_signaled_would_block_error!(test_try_emit_signals_would_block_error, signals, lock, try_emit_signals, &1, &2; SignaledError::WouldBlock { source: ErrorSource::Signals });
@@ -2183,66 +2523,73 @@ mod tests {
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-    fn create_poisoned_signaled() -> (Arc<Signaled<i32>>, SignalId) {
-        let signaled = Arc::new(Signaled::new(0));
-        let signal_id = signaled.add_signal(signal_sync!(|_, _| panic!())).unwrap();
+    macro_rules! create_poisoned_signaled {
+        ($lock:ident, $get_lock:ident) => {{
+            let signaled = Arc::new(Signaled::new(0));
+            let signal_id = signaled.add_signal(signal_sync!(|_, _| panic!())).unwrap();
 
-        let signaled_clone = Arc::clone(&signaled);
-        let result = std::panic::catch_unwind(move || {
-            let _ = signaled_clone.set(1);
-        });
-        assert!(result.is_err());
-        (signaled, signal_id)
+            let signaled_clone = Arc::clone(&signaled);
+            let result = std::panic::catch_unwind(move || {
+                let _lock = signaled_clone.$lock.$get_lock().unwrap();
+                panic!();
+            });
+            assert!(result.is_err());
+            (signaled, signal_id)
+        }};
     }
 
     macro_rules! test_signaled_poisoned_lock {
-        ($test_name:ident, $method:ident $(, $args:expr)*; $error:expr) => {
+        ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr) => {
             #[test]
             fn $test_name() {
-                let (signaled, _) = create_poisoned_signaled();
+                let (signaled, _) = create_poisoned_signaled!($lock, $get_lock);
                 let err: SignaledError = $error;
                 assert!(signaled.$method($($args),*).is_err_and(|e| e == err));
             }
         };
-        ($test_name:ident, $method:ident $(, $args:expr)*; $error:expr, $use_id:tt) => {
+        ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr, $use_id:tt) => {
             #[test]
             fn $test_name() {
-                let (signaled, signal_id) = create_poisoned_signaled();
+                let (signaled, signal_id) = create_poisoned_signaled!($lock, $get_lock);
                 let err: SignaledError = $error;
                 assert!(signaled.$method(signal_id $(, $args),*).is_err_and(|e| e == err));
             }
         }
     }
-    test_signaled_poisoned_lock!(test_set_poisoned_lock_error, set, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_try_set_poisoned_lock_error, try_set, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_set_silent_poisoned_lock_error, set_silent, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_try_set_silent_poisoned_lock_error, try_set_silent, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_set_and_spawn_poisoned_lock_error, set_and_spawn, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_try_set_and_spawn_poisoned_lock_error, try_set_and_spawn, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_get_poisoned_lock_error, get; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_try_get_poisoned_lock_error, try_get; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_get_lock_poisoned_lock_error, get_lock; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_try_get_lock_poisoned_lock_error, try_get_lock; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_emit_signals_poisoned_lock_error, emit_signals, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::Signals });
-    test_signaled_poisoned_lock!(test_try_emit_signals_poisoned_lock_error, try_emit_signals, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::Signals });
-    test_signaled_poisoned_lock!(test_add_signal_poisoned_lock_error, add_signal, signal_sync!(|_,_| {}); SignaledError::PoisonedLock { source: ErrorSource::Signals });
-    test_signaled_poisoned_lock!(test_try_add_signal_poisoned_lock_error, try_add_signal, signal_sync!(|_,_| {}); SignaledError::PoisonedLock { source: ErrorSource::Signals });
-    test_signaled_poisoned_lock!(test_remove_signal_poisoned_lock_error, remove_signal; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_try_remove_signal_poisoned_lock_error, try_remove_signal; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_set_signal_callback_poisoned_lock_error, set_signal_callback, |_, _| {}; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_try_set_signal_callback_poisoned_lock_error, try_set_signal_callback, |_, _| {}; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_set_signal_trigger_poisoned_lock_error, set_signal_trigger, |_, _| true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_try_set_signal_trigger_poisoned_lock_error, try_set_signal_trigger, |_, _| true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_remove_signal_trigger_poisoned_lock_error, remove_signal_trigger; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_try_remove_signal_trigger_poisoned_lock_error, try_remove_signal_trigger; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_set_signal_priority_poisoned_lock_error, set_signal_priority, 1; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_try_set_signal_priority_poisoned_lock_error, try_set_signal_priority, 1; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_set_signal_once_poisoned_lock_error, set_signal_once, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_try_set_signal_once_poisoned_lock_error, try_set_signal_once, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_set_signal_mute_poisoned_lock_error, set_signal_mute, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_try_set_signal_mute_poisoned_lock_error, try_set_signal_mute, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_combine_signals_poisoned_lock_error, combine_signals, &[1, 2]; SignaledError::PoisonedLock { source: ErrorSource::Signals });
-    test_signaled_poisoned_lock!(test_try_combine_signals_poisoned_lock_error, try_combine_signals, &[1, 2]; SignaledError::PoisonedLock { source: ErrorSource::Signals });
+    test_signaled_poisoned_lock!(test_set_poisoned_lock_error, val, write, set, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_try_set_poisoned_lock_error, val, write, try_set, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_set_throttled_poisoned_lock_error, throttle_instant, lock, set_throttled, 1; SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant });
+    test_signaled_poisoned_lock!(test_try_set_throttled_poisoned_lock_error, throttle_instant, lock, try_set_throttled, 1; SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant });
+    test_signaled_poisoned_lock!(test_set_silent_poisoned_lock_error, val, write, set_silent, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_try_set_silent_poisoned_lock_error, val, write, try_set_silent, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_set_and_spawn_poisoned_lock_error, val, write, set_and_spawn, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_try_set_and_spawn_poisoned_lock_error, val, write, try_set_and_spawn, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_set_throttled_and_spawn_poisoned_lock_error, throttle_instant, lock, set_throttled_and_spawn, 1; SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant });
+    test_signaled_poisoned_lock!(test_try_set_throttled_and_spawn_poisoned_lock_error, throttle_instant, lock, try_set_throttled_and_spawn, 1; SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant });
+    test_signaled_poisoned_lock!(test_get_poisoned_lock_error, val, write, get; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_try_get_poisoned_lock_error, val, write, try_get; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_get_lock_poisoned_lock_error, val, write, get_lock; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_try_get_lock_poisoned_lock_error, val, write, try_get_lock; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_emit_signals_poisoned_lock_error, signals, lock, emit_signals, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::Signals });
+    test_signaled_poisoned_lock!(test_try_emit_signals_poisoned_lock_error, signals, lock, try_emit_signals, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::Signals });
+    test_signaled_poisoned_lock!(test_add_signal_poisoned_lock_error, signals, lock, add_signal, signal_sync!(|_,_| {}); SignaledError::PoisonedLock { source: ErrorSource::Signals });
+    test_signaled_poisoned_lock!(test_try_add_signal_poisoned_lock_error, signals, lock, try_add_signal, signal_sync!(|_,_| {}); SignaledError::PoisonedLock { source: ErrorSource::Signals });
+    test_signaled_poisoned_lock!(test_remove_signal_poisoned_lock_error, signals, lock, remove_signal; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_try_remove_signal_poisoned_lock_error, signals, lock, try_remove_signal; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_set_signal_callback_poisoned_lock_error, signals, lock, set_signal_callback, |_, _| {}; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_try_set_signal_callback_poisoned_lock_error, signals, lock, try_set_signal_callback, |_, _| {}; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_set_signal_trigger_poisoned_lock_error, signals, lock, set_signal_trigger, |_, _| true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_try_set_signal_trigger_poisoned_lock_error, signals, lock, try_set_signal_trigger, |_, _| true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_remove_signal_trigger_poisoned_lock_error, signals, lock, remove_signal_trigger; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_try_remove_signal_trigger_poisoned_lock_error, signals, lock, try_remove_signal_trigger; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_set_signal_priority_poisoned_lock_error, signals, lock, set_signal_priority, 1; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_try_set_signal_priority_poisoned_lock_error, signals, lock, try_set_signal_priority, 1; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_set_signal_once_poisoned_lock_error, signals, lock, set_signal_once, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_try_set_signal_once_poisoned_lock_error, signals, lock, try_set_signal_once, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_set_signal_mute_poisoned_lock_error, signals, lock, set_signal_mute, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_try_set_signal_mute_poisoned_lock_error, signals, lock, try_set_signal_mute, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
+    test_signaled_poisoned_lock!(test_combine_signals_poisoned_lock_error, signals, lock, combine_signals, &[1, 2]; SignaledError::PoisonedLock { source: ErrorSource::Signals });
+    test_signaled_poisoned_lock!(test_try_combine_signals_poisoned_lock_error, signals, lock, try_combine_signals, &[1, 2]; SignaledError::PoisonedLock { source: ErrorSource::Signals });
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -2569,4 +2916,66 @@ mod tests {
         signaled.set(2).unwrap();
         assert_eq!(signaled.signals.lock().unwrap().len(), 0);
     }
+
+    macro_rules! test_set_throttled {
+        ($test_name:ident, $set:ident, $set_duration:ident) => {
+            #[test]
+            fn $test_name() {
+                let calls = Arc::new(Mutex::new(0));
+                let signaled = Signaled::new(());
+                signaled.$set_duration(Duration::from_millis(500)).unwrap();
+
+                let calls_clone = Arc::clone(&calls);
+                signaled.add_signal(signal_sync!(move |_, _| {
+                    let mut lock = calls_clone.lock().unwrap();
+                    *lock = *lock + 1;
+                })).unwrap();
+
+                signaled.$set(()).unwrap();
+                assert_eq!(*calls.lock().unwrap(), 1);
+                std::thread::sleep(Duration::from_millis(100));
+
+                signaled.$set(()).unwrap();
+                assert_eq!(*calls.lock().unwrap(), 1);
+                std::thread::sleep(Duration::from_millis(500));
+
+                signaled.$set(()).unwrap();
+                assert_eq!(*calls.lock().unwrap(), 2);
+            }
+        };
+    }
+
+    test_set_throttled!(test_set_throttled, set_throttled, set_throttle_duration);
+    test_set_throttled!(test_try_set_throttled, try_set_throttled, try_set_throttle_duration);
+
+    macro_rules! test_set_throttled_and_spawn {
+        ($test_name:ident, $set:ident, $set_duration:ident) => {
+            #[test]
+            fn $test_name() {
+                let calls = Arc::new(Mutex::new(0));
+                let signaled = Signaled::new(());
+                signaled.$set_duration(Duration::from_millis(500)).unwrap();
+
+                let calls_clone = Arc::clone(&calls);
+                signaled.add_signal(signal_sync!(move |_, _| {
+                    let mut lock = calls_clone.lock().unwrap();
+                    *lock = *lock + 1;
+                })).unwrap();
+
+                signaled.$set(()).unwrap().join().unwrap().unwrap();
+                assert_eq!(*calls.lock().unwrap(), 1);
+                std::thread::sleep(Duration::from_millis(100));
+
+                signaled.$set(()).unwrap().join().unwrap().unwrap();
+                assert_eq!(*calls.lock().unwrap(), 1);
+                std::thread::sleep(Duration::from_millis(500));
+
+                signaled.$set(()).unwrap().join().unwrap().unwrap();
+                assert_eq!(*calls.lock().unwrap(), 2);
+            }
+        };
+    }
+
+    test_set_throttled_and_spawn!(test_set_throttled_and_spawn, set_throttled_and_spawn, set_throttle_duration);
+    test_set_throttled_and_spawn!(test_try_set_throttled_and_spawn, try_set_throttled_and_spawn, try_set_throttle_duration);
 }
