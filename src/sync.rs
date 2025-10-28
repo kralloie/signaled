@@ -1,8 +1,11 @@
 use std::fmt::{Debug, Display};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 use std::sync::{RwLock, RwLockReadGuard, TryLockError};
-use std::sync::{Arc, Mutex, atomic::{AtomicU64, AtomicBool, Ordering}};
 use std::thread;
-use std::thread::{JoinHandle};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -20,7 +23,7 @@ pub enum ErrorSource {
     /// Error coming from [`Signal`] `callback`.
     SignalCallback,
     /// Error coming from [`Signal`] `trigger`.
-    SignalTrigger
+    SignalTrigger,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -30,7 +33,7 @@ pub enum SignaledError {
     /// Tried to acquire a lock that is held elsewhere.
     WouldBlock { source: ErrorSource },
     /// The provided `SignalId` does not correspond to any [`Signal`].
-    InvalidSignalId { id: SignalId }
+    InvalidSignalId { id: SignalId },
 }
 
 pub type SignalId = u64;
@@ -38,9 +41,9 @@ pub type SignalId = u64;
 static SIGNAL_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Generates a new [`SignalId`] for a [`Signal`] using the global identifier counter.
-/// 
-/// # Panics 
-/// 
+///
+/// # Panics
+///
 /// Panics in debug builds if the identifier counter overflows (`u64::MAX`).
 pub fn new_signal_id() -> SignalId {
     let id = SIGNAL_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -74,7 +77,7 @@ pub struct Signal<T: Send + Sync + 'static> {
     /// Boolean representing if the [`Signal`] should be removed from the [`Signaled`] after its callback is successfully invoked once. The removal only occurs if the signal's trigger condition is met during emission.
     once: AtomicBool,
     /// Boolean representing if the [`Signal`] should not invoke the callback when emitted.
-    mute: AtomicBool
+    mute: AtomicBool,
 }
 
 impl<T: Send + Sync + 'static> Signal<T> {
@@ -98,7 +101,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// signaled.add_signal(signal).unwrap();
     /// signaled.set(6).unwrap(); // Prints "Old: 5 | New: 6"
     /// ```
-    pub fn new<F, G> (callback: F, trigger: G, priority: u64, once: bool, mute: bool) -> Self
+    pub fn new<F, G>(callback: F, trigger: G, priority: u64, once: bool, mute: bool) -> Self
     where
         F: Fn(&T, &T) + Send + Sync + 'static,
         G: Fn(&T, &T) -> bool + Send + Sync + 'static,
@@ -109,7 +112,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
             id: new_signal_id(),
             priority: AtomicU64::new(priority),
             once: AtomicBool::new(once),
-            mute: AtomicBool::new(mute)
+            mute: AtomicBool::new(mute),
         }
     }
 
@@ -135,26 +138,34 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// signal.emit(&4, &10).unwrap(); // Prints "Old: 4, New: 10"
     /// ```
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signal::try_emit`].
     pub fn emit(&self, old: &T, new: &T) -> Result<(), SignaledError> {
         if self.mute.load(Ordering::Relaxed) {
-            return Ok(())
+            return Ok(());
         }
-        let trigger = self.trigger.read()
-            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })?;
+        let trigger = self
+            .trigger
+            .read()
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::SignalTrigger,
+            })?;
         if trigger(old, new) {
-            let callback = self.callback.read()
-                .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalCallback })?;
+            let callback = self
+                .callback
+                .read()
+                .map_err(|_| SignaledError::PoisonedLock {
+                    source: ErrorSource::SignalCallback,
+                })?;
             callback(old, new);
         }
         Ok(())
     }
 
     /// Emits the signal, executing the callback if the trigger condition is met.
-    /// 
+    ///
     /// This function unlike [`Signal::emit`], is non-blocking so there are no re-entrant calls that block until the `trigger` and `callback` locks can be acquired.
     ///
     /// # Arguments
@@ -165,9 +176,9 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if the `callback` or `trigger` locks are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `callback` or `trigger` locks are held elsewhere.
-    /// 
+    ///
     /// # Examples
     ///
     /// ```
@@ -180,165 +191,200 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// ```
     pub fn try_emit(&self, old: &T, new: &T) -> Result<(), SignaledError> {
         if self.mute.load(Ordering::Relaxed) {
-            return Ok(())
+            return Ok(());
         }
-        let trigger = self.trigger.try_read()
-            .map_err(|e| {
-                match e {
-                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger },
-                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalTrigger }
-                }
-            })?;
+        let trigger = self.trigger.try_read().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::SignalTrigger,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::SignalTrigger,
+            },
+        })?;
         if trigger(old, new) {
-            let callback = self.callback.try_read()
-                .map_err(|e| {
-                    match e {
-                        TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalCallback },
-                        TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalCallback }
-                    }
-                })?;
+            let callback = self.callback.try_read().map_err(|e| match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                    source: ErrorSource::SignalCallback,
+                },
+                TryLockError::WouldBlock => SignaledError::WouldBlock {
+                    source: ErrorSource::SignalCallback,
+                },
+            })?;
             callback(old, new);
         }
         Ok(())
-    }   
+    }
 
     /// Sets a new callback for the [`Signal`].
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `callback` - The new callback function.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if the `callback` lock is poisoned.
     ///     
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signal::try_set_callback`].
-    pub fn set_callback<F: Fn(&T, &T) + Send + Sync + 'static>(&self, callback: F) -> Result<(), SignaledError> {
-        let mut lock = self.callback.write().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalCallback })?;
+    pub fn set_callback<F: Fn(&T, &T) + Send + Sync + 'static>(
+        &self,
+        callback: F,
+    ) -> Result<(), SignaledError> {
+        let mut lock = self
+            .callback
+            .write()
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::SignalCallback,
+            })?;
         *lock = Arc::new(callback);
         Ok(())
     }
-    
+
     /// Sets a new callback for the [`Signal`].
-    /// 
+    ///
     /// This function unlike [`Signal::set_callback`], is non-blocking so there are no re-entrant calls that block until the `callback` lock can be acquired.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `callback` - The new callback function.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if the `callback` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `callback` lock is held elsewhere.
-    pub fn try_set_callback<F: Fn(&T, &T) + Send + Sync + 'static>(&self, callback: F) -> Result<(), SignaledError> {
-        let mut lock = self.callback.try_write().map_err(|e| {
-            match e {
-                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalCallback },
-                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalCallback }
-            }
+    pub fn try_set_callback<F: Fn(&T, &T) + Send + Sync + 'static>(
+        &self,
+        callback: F,
+    ) -> Result<(), SignaledError> {
+        let mut lock = self.callback.try_write().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::SignalCallback,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::SignalCallback,
+            },
         })?;
         *lock = Arc::new(callback);
         Ok(())
     }
 
     /// Sets a new trigger for the [`Signal`].
-    /// 
+    ///
     /// Default trigger always returns `true`.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `trigger` - The new trigger function.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if the `trigger` lock is poisoned.
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signal::try_set_trigger`]
-    pub fn set_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(&self, trigger: F) -> Result<(), SignaledError> {
-        let mut lock = self.trigger.write().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })?;
+    pub fn set_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(
+        &self,
+        trigger: F,
+    ) -> Result<(), SignaledError> {
+        let mut lock = self
+            .trigger
+            .write()
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::SignalTrigger,
+            })?;
         *lock = Arc::new(trigger);
         Ok(())
     }
 
     /// Sets a new trigger for the [`Signal`].
-    /// 
+    ///
     /// This function unlike [`Signal::set_trigger`], is non-blocking so there are no re-entrant calls that block until the `trigger` lock can be acquired.
-    /// 
+    ///
     /// Default trigger always returns `true`.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `trigger` - The new trigger function.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if the `trigger` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `trigger` lock is held elsewhere.
-    pub fn try_set_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(&self, trigger: F) -> Result<(), SignaledError> {
-        let mut lock = self.trigger.try_write().map_err(|e| {
-            match e {
-                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger },
-                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalTrigger }
-            }
+    pub fn try_set_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(
+        &self,
+        trigger: F,
+    ) -> Result<(), SignaledError> {
+        let mut lock = self.trigger.try_write().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::SignalTrigger,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::SignalTrigger,
+            },
         })?;
         *lock = Arc::new(trigger);
         Ok(())
     }
 
     /// Sets the [`Signal`] `trigger` to always return true.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if the `trigger` lock is poisoned.
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative see [`Signal::try_remove_trigger`]
     pub fn remove_trigger(&self) -> Result<(), SignaledError> {
-        let mut lock = self.trigger.write().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })?;
+        let mut lock = self
+            .trigger
+            .write()
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::SignalTrigger,
+            })?;
         *lock = Arc::new(|_, _| true);
         Ok(())
     }
 
     /// Sets the [`Signal`] `trigger` to always return true.
-    /// 
+    ///
     /// This function unlike [`Signal::remove_trigger`], is non-blocking so there are no re-entrant calls that block until the `trigger` lock can be acquired.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if the `trigger` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `trigger` lock is held elsewhere.
     pub fn try_remove_trigger(&self) -> Result<(), SignaledError> {
-        let mut lock = self.trigger.try_write().map_err(|e| {
-            match e {
-                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger },
-                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalTrigger }
-            }
+        let mut lock = self.trigger.try_write().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::SignalTrigger,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::SignalTrigger,
+            },
         })?;
         *lock = Arc::new(|_, _| true);
         Ok(())
     }
 
     /// Sets the execution priority of the [`Signal`].
-    /// 
+    ///
     /// Default priority is 0.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `priority` The new priority number, bigger number means higher priority.
     pub fn set_priority(&self, priority: u64) {
         self.priority.store(priority, Ordering::Relaxed);
@@ -352,77 +398,80 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// Sets the `mute` flag of the [`Signal`].
     pub fn set_mute(&self, is_mute: bool) {
         self.mute.store(is_mute, Ordering::Relaxed);
-    } 
-
+    }
 
     /// Combines `N` amount of [`Signal`]s returning a single combined [`Signal`] instance.
-    /// 
+    ///
     /// The order in which each `callback` will be called depends on the order that the [`Signal`]s are passed into the argument's slice.
-    /// 
+    ///
     /// * `callback` will invoke all callbacks from the combined [`Signal`]s.
-    /// 
+    ///
     /// * `trigger` will combine all triggers only returning `true` if every `trigger` does so.
-    /// 
+    ///
     /// * `priority` will be the highest `priority` of the provided `signals`.
-    /// 
+    ///
     /// * `mute` and `once` will be `false` by default.
-    /// 
+    ///
     /// * `id` will be a new unique [`SignalId`].
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `signals` A slice containing the [`Signal`]s that will be combined into a single [`Signal`] instance.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if any of the provided [`Signal`] instances `callback` or `trigger` locks are poisoned.
-    /// 
+    ///
     /// # Examples
     /// ```
     /// use std::sync::{Arc, Mutex};
     /// use signaled::{signal_sync, sync::{Signal}};
-    /// 
+    ///
     /// let calls = Arc::new(Mutex::new(0));
-    /// 
+    ///
     /// let calls_clone = Arc::clone(&calls);
     /// let signal_a = signal_sync!(move |_, _| {
     ///     let mut lock = calls_clone.lock().unwrap();
     ///     *lock = *lock + 1;
     /// });
-    /// 
+    ///
     /// let calls_clone = Arc::clone(&calls);
     /// let signal_b = signal_sync!(move |_, _| {
     ///     let mut lock = calls_clone.lock().unwrap();
     ///     *lock = *lock + 2;
     /// });
-    /// 
+    ///
     /// let signal_c = Signal::combine(&[signal_a, signal_b]).unwrap();
-    /// 
+    ///
     /// signal_c.emit(&(), &()).unwrap();
     /// assert_eq!(*calls.lock().unwrap(), 3); // `signal_a` increases calls by 1 and `signal_b` increases calls by 2 so the `combined` signal increases calls by 3
     /// ```
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signal::try_combine`].
     pub fn combine(signals: &[Signal<T>]) -> Result<Self, SignaledError> {
         let callbacks: Vec<Arc<dyn Fn(&T, &T) + Send + Sync + 'static>> = signals
             .iter()
             .map(|signal| {
-                signal.callback.read()
-                    .map(|cb| cb.clone())
-                    .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalCallback })
+                signal.callback.read().map(|cb| cb.clone()).map_err(|_| {
+                    SignaledError::PoisonedLock {
+                        source: ErrorSource::SignalCallback,
+                    }
+                })
             })
             .collect::<Result<_, _>>()?;
 
         let triggers: Vec<Arc<dyn Fn(&T, &T) -> bool + Send + Sync + 'static>> = signals
             .iter()
             .map(|signal| {
-                signal.trigger.read()
-                    .map(|tr| tr.clone())
-                    .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger })
+                signal.trigger.read().map(|tr| tr.clone()).map_err(|_| {
+                    SignaledError::PoisonedLock {
+                        source: ErrorSource::SignalTrigger,
+                    }
+                })
             })
             .collect::<Result<_, _>>()?;
 
@@ -439,65 +488,62 @@ impl<T: Send + Sync + 'static> Signal<T> {
                 }
             }))),
             trigger: Arc::new(RwLock::new(Arc::new(move |old, new| {
-                triggers
-                    .iter()
-                    .all(|tr| tr(old, new))
+                triggers.iter().all(|tr| tr(old, new))
             }))),
             id,
             priority: AtomicU64::new(priority),
             once: AtomicBool::new(false),
-            mute: AtomicBool::new(false)
+            mute: AtomicBool::new(false),
         })
     }
 
-
     /// Combines `N` amount of [`Signal`]s returning a single combined [`Signal`] instance.
-    /// 
+    ///
     /// This function unlike [`Signal::combine`], is non-blocking so there are no re-entrant calls that block until the `callback` and `trigger` locks can be acquired.
-    /// 
+    ///
     /// The order in which each `callback` will be called depends on the order that the [`Signal`]s are passed into the argument's slice.
-    /// 
+    ///
     /// * `callback` will invoke all callbacks from the combined [`Signal`]s.
-    /// 
+    ///
     /// * `trigger` will combine all triggers only returning `true` if every `trigger` does so.
-    /// 
+    ///
     /// * `priority` will be the highest `priority` of the provided `signals`.
-    /// 
+    ///
     /// * `mute` and `once` will be `false` by default.
-    /// 
+    ///
     /// * `id` will be a new unique [`SignalId`].
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `signals` A slice containing the [`Signal`]s that will be combined into a single [`Signal`] instance.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if any of the provided [`Signal`] instances `callback` or `trigger` locks are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if any of the provided [`Signal`] instances `callback` or `trigger` locks are held elsewhere.
-    /// 
+    ///
     /// # Examples
     /// ```
     /// use std::sync::{Arc, Mutex};
     /// use signaled::{signal_sync, sync::{Signal}};
-    /// 
+    ///
     /// let calls = Arc::new(Mutex::new(0));
-    /// 
+    ///
     /// let calls_clone = Arc::clone(&calls);
     /// let signal_a = signal_sync!(move |_, _| {
     ///     let mut lock = calls_clone.lock().unwrap();
     ///     *lock = *lock + 1;
     /// });
-    /// 
+    ///
     /// let calls_clone = Arc::clone(&calls);
     /// let signal_b = signal_sync!(move |_, _| {
     ///     let mut lock = calls_clone.lock().unwrap();
     ///     *lock = *lock + 2;
     /// });
-    /// 
+    ///
     /// let signal_c = Signal::try_combine(&[signal_a, signal_b]).unwrap();
-    /// 
+    ///
     /// signal_c.emit(&(), &()).unwrap();
     /// assert_eq!(*calls.lock().unwrap(), 3); // `signal_a` increases calls by 1 and `signal_b` increases calls by 2 so the `combined` signal increases calls by 3
     /// ```
@@ -505,13 +551,17 @@ impl<T: Send + Sync + 'static> Signal<T> {
         let callbacks: Vec<Arc<dyn Fn(&T, &T) + Send + Sync + 'static>> = signals
             .iter()
             .map(|signal| {
-                signal.callback.try_read()
+                signal
+                    .callback
+                    .try_read()
                     .map(|cb| cb.clone())
-                    .map_err(|e| {
-                        match e {
-                            TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalCallback },
-                            TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalCallback }
-                        }
+                    .map_err(|e| match e {
+                        TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                            source: ErrorSource::SignalCallback,
+                        },
+                        TryLockError::WouldBlock => SignaledError::WouldBlock {
+                            source: ErrorSource::SignalCallback,
+                        },
                     })
             })
             .collect::<Result<_, _>>()?;
@@ -519,13 +569,17 @@ impl<T: Send + Sync + 'static> Signal<T> {
         let triggers: Vec<Arc<dyn Fn(&T, &T) -> bool + Send + Sync + 'static>> = signals
             .iter()
             .map(|signal| {
-                signal.trigger.try_read()
+                signal
+                    .trigger
+                    .try_read()
                     .map(|tr| tr.clone())
-                    .map_err(|e| {
-                        match e {
-                            TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger },
-                            TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::SignalTrigger }
-                        }
+                    .map_err(|e| match e {
+                        TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                            source: ErrorSource::SignalTrigger,
+                        },
+                        TryLockError::WouldBlock => SignaledError::WouldBlock {
+                            source: ErrorSource::SignalTrigger,
+                        },
                     })
             })
             .collect::<Result<_, _>>()?;
@@ -543,21 +597,26 @@ impl<T: Send + Sync + 'static> Signal<T> {
                 }
             }))),
             trigger: Arc::new(RwLock::new(Arc::new(move |old, new| {
-                triggers
-                    .iter()
-                    .all(|tr| tr(old, new) )
+                triggers.iter().all(|tr| tr(old, new))
             }))),
             id,
             priority: AtomicU64::new(priority),
             once: AtomicBool::new(false),
-            mute: AtomicBool::new(false)
+            mute: AtomicBool::new(false),
         })
     }
 }
 
 impl<T: Send + Sync + 'static> Display for Signal<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Signal {{ id: {}, priority: {}, once: {}, mute: {} }}", self.id, self.priority.load(Ordering::Relaxed), self.once.load(Ordering::Relaxed), self.mute.load(Ordering::Relaxed))
+        write!(
+            f,
+            "Signal {{ id: {}, priority: {}, once: {}, mute: {} }}",
+            self.id,
+            self.priority.load(Ordering::Relaxed),
+            self.once.load(Ordering::Relaxed),
+            self.mute.load(Ordering::Relaxed)
+        )
     }
 }
 
@@ -582,7 +641,7 @@ impl<T: Send + Sync + 'static> Default for Signal<T> {
             id: new_signal_id(),
             priority: AtomicU64::new(0),
             once: AtomicBool::new(false),
-            mute: AtomicBool::new(false)
+            mute: AtomicBool::new(false),
         }
     }
 }
@@ -632,11 +691,10 @@ macro_rules! signal_sync {
     };
 }
 
-
 /// A reactive container that holds a value and emits [`Signal`]s when the value changes.
 ///
 /// [`Signaled<T>`] manages a value of type `T` and a collection of [`Signal<T>`] instances.
-/// 
+///
 /// When the value is updated via `set`, all [`Signal`]s are emitted in order of descending priority,
 /// provided their trigger conditions are met.
 ///
@@ -658,7 +716,7 @@ pub struct Signaled<T: Send + Sync + 'static> {
     /// Instant to use as reference for throttling.
     throttle_instant: Arc<Mutex<Instant>>,
     /// Duration of the throttling.
-    throttle_duration: Arc<Mutex<Duration>>
+    throttle_duration: Arc<Mutex<Duration>>,
 }
 
 impl<T: Send + Sync + 'static> Signaled<T> {
@@ -672,7 +730,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             val: RwLock::new(val),
             signals: Arc::new(Mutex::new(Vec::new())),
             throttle_instant: Arc::new(Mutex::new(Instant::now())),
-            throttle_duration: Arc::new(Mutex::new(Duration::ZERO))
+            throttle_duration: Arc::new(Mutex::new(Duration::ZERO)),
         }
     }
 
@@ -695,22 +753,22 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// signaled.add_signal(signal_sync!(|old, new| println!("Old: {} | New: {}", old, new)));
     /// signaled.set(1).unwrap(); /// Prints "Old: 0 | New: 1"
     /// ```
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_set`].
     pub fn set(&self, new_value: T) -> Result<(), SignaledError> {
-        let mut guard = self.val
-            .write()
-            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Value })?;
+        let mut guard = self.val.write().map_err(|_| SignaledError::PoisonedLock {
+            source: ErrorSource::Value,
+        })?;
         let old_value = std::mem::replace(&mut *guard, new_value);
         self.emit_signals(&old_value, &guard)
     }
 
     /// Sets a new value for `val` and emits all [`Signal`]s.
-    /// 
+    ///
     /// This function unlike [`Signaled::set`], is non-blocking so there are no re-entrant calls that block until the lock for `val` is acquired.
     ///
     /// # Arguments
@@ -720,7 +778,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if `val`, `signals` or [`Signal`]s inside `signals` locks are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if `val`, `signals` or [`Signal`]s inside `signals` locks are held elsewhere.
     ///
     /// # Examples
@@ -733,14 +791,14 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// signaled.try_set(1).unwrap(); /// Prints "Old: 0 | New: 1"
     /// ```
     pub fn try_set(&self, new_value: T) -> Result<(), SignaledError> {
-        let mut guard = self.val
-            .try_write()
-            .map_err(|e| {
-                match e {
-                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Value },
-                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Value }
-                }
-            })?;
+        let mut guard = self.val.try_write().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::Value,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::Value,
+            },
+        })?;
         let old_value = std::mem::replace(&mut *guard, new_value);
         self.try_emit_signals(&old_value, &*guard)
     }
@@ -757,7 +815,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Examples
     ///
-    /// ``` 
+    /// ```
     /// use signaled::{signal_sync, sync::{Signaled, Signal}};
     ///
     /// let signaled = Signaled::new(0);
@@ -765,16 +823,16 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// signaled.set_silent(1).unwrap(); // This does not emit the signal so "do something" is not printed.
     /// assert_eq!(signaled.get().unwrap(), 1);
     /// ```
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_set_silent`].
     pub fn set_silent(&self, new_value: T) -> Result<(), SignaledError> {
-        let mut guard = self.val
-            .write()
-            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Value })?;
+        let mut guard = self.val.write().map_err(|_| SignaledError::PoisonedLock {
+            source: ErrorSource::Value,
+        })?;
         *guard = new_value;
         Ok(())
     }
@@ -782,7 +840,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// Sets a new value for `val` without emitting `signals`.
     ///
     /// This function unlike [`Signaled::set_silent`], is non-blocking so there are no re-entrant calls that block until the lock for `val` is acquired.
-    /// 
+    ///
     /// # Arguments
     ///
     /// * `new_value` - The new value of the [`Signaled`].
@@ -790,12 +848,12 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if `val` lock is held elsewhere.
     ///
     /// # Examples
     ///
-    /// ``` 
+    /// ```
     /// use signaled::{signal_sync, sync::{Signaled, Signal}};
     ///
     /// let signaled = Signaled::new(0);
@@ -804,14 +862,14 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// assert_eq!(signaled.get().unwrap(), 1);
     /// ```
     pub fn try_set_silent(&self, new_value: T) -> Result<(), SignaledError> {
-        let mut guard = self.val
-            .try_write()
-            .map_err(|e| {
-                match e {
-                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Value },
-                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Value }
-                }
-            })?;
+        let mut guard = self.val.try_write().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::Value,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::Value,
+            },
+        })?;
         *guard = new_value;
         Ok(())
     }
@@ -827,20 +885,31 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
     /// `throttle_instant`, `throttle_duration`, `val`, or `signals` are poisoned.
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_set_silent_throttled`].
     pub fn set_silent_throttled(&self, new_value: T) -> Result<(), SignaledError> {
-        let mut throttle_instant = self.throttle_instant.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant })?;
+        let mut throttle_instant =
+            self.throttle_instant
+                .lock()
+                .map_err(|_| SignaledError::PoisonedLock {
+                    source: ErrorSource::ThrottleInstant,
+                })?;
         if Instant::now() < *throttle_instant {
-            return Ok(())
+            return Ok(());
         }
 
         self.set_silent(new_value)?;
-        *throttle_instant = Instant::now() + *self.throttle_duration.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration })?;
+        *throttle_instant = Instant::now()
+            + *self
+                .throttle_duration
+                .lock()
+                .map_err(|_| SignaledError::PoisonedLock {
+                    source: ErrorSource::ThrottleDuration,
+                })?;
         Ok(())
     }
 
@@ -855,27 +924,32 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
     /// `throttle_instant`, `throttle_duration` or `val` are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if any of the underlying locks for
     /// `throttle_instant`, `throttle_duration` or `val` are held elsewhere.
     pub fn try_set_silent_throttled(&self, new_value: T) -> Result<(), SignaledError> {
-        let mut throttle_instant = self.throttle_instant.try_lock().map_err(|e| {
-            match e {
-                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant },
-                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleInstant }
-            }
+        let mut throttle_instant = self.throttle_instant.try_lock().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::ThrottleInstant,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::ThrottleInstant,
+            },
         })?;
         if Instant::now() < *throttle_instant {
-            return Ok(())
+            return Ok(());
         }
 
         self.try_set_silent(new_value)?;
-        *throttle_instant = Instant::now() + *self.throttle_duration.try_lock().map_err(|e| {
-            match e {
-                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration },
-                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleDuration }
-            }
-        })?;
+        *throttle_instant = Instant::now()
+            + *self.throttle_duration.try_lock().map_err(|e| match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                    source: ErrorSource::ThrottleDuration,
+                },
+                TryLockError::WouldBlock => SignaledError::WouldBlock {
+                    source: ErrorSource::ThrottleDuration,
+                },
+            })?;
         Ok(())
     }
 
@@ -891,18 +965,23 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// Returns [`SignaledError::PoisonedLock`] if the `throttle_duration` lock is poisoned.
     ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_set_throttle_duration`].
-    pub fn set_throttle_duration(&self, duration: Duration) -> Result<(), SignaledError>{
-        *self.throttle_duration.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration })? = duration;
+    pub fn set_throttle_duration(&self, duration: Duration) -> Result<(), SignaledError> {
+        *self
+            .throttle_duration
+            .lock()
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::ThrottleDuration,
+            })? = duration;
         Ok(())
     }
 
     /// Sets the minimum [`Duration`] that must elapse between consecutive calls to
     /// [`Signaled::set_throttled`].
-    /// 
+    ///
     /// This function unlike [`Signaled::set_throttle_duration`], is non-blocking so there are no re-entrant calls that block until the lock can be acquired.
     ///
     /// # Arguments
@@ -912,14 +991,16 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if the `throttle_duration` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `throttle_duration` lock is held elsewhere.
-    pub fn try_set_throttle_duration(&self, duration: Duration) -> Result<(), SignaledError>{
-        *self.throttle_duration.try_lock().map_err(|e| {
-            match e {
-                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration },
-                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleDuration }
-            }   
+    pub fn try_set_throttle_duration(&self, duration: Duration) -> Result<(), SignaledError> {
+        *self.throttle_duration.try_lock().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::ThrottleDuration,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::ThrottleDuration,
+            },
         })? = duration;
         Ok(())
     }
@@ -930,7 +1011,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// This method uses the configured [`throttle_duration`](Self::set_throttle_duration)
     /// and the internal `throttle_instant` to prevent signals from being emitted
     /// more frequently than allowed.
-    /// 
+    ///
     /// # Arguments
     ///
     /// * `new_value` - The new value of the [`Signaled`].
@@ -970,30 +1051,41 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// ```
     ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_set_throttled`].
     pub fn set_throttled(&self, new_value: T) -> Result<(), SignaledError> {
-        let mut throttle_instant = self.throttle_instant.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant })?;
+        let mut throttle_instant =
+            self.throttle_instant
+                .lock()
+                .map_err(|_| SignaledError::PoisonedLock {
+                    source: ErrorSource::ThrottleInstant,
+                })?;
         if Instant::now() < *throttle_instant {
-            return Ok(())
+            return Ok(());
         }
 
         self.set(new_value)?;
-        *throttle_instant = Instant::now() + *self.throttle_duration.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration })?;
+        *throttle_instant = Instant::now()
+            + *self
+                .throttle_duration
+                .lock()
+                .map_err(|_| SignaledError::PoisonedLock {
+                    source: ErrorSource::ThrottleDuration,
+                })?;
         Ok(())
     }
 
     /// Sets a new value for `val` and emits all [`Signal`]s, but only if enough time
     /// has passed since the previous throttled update.
-    /// 
+    ///
     /// This function unlike [`Signaled::set_throttled`], is non-blocking so there are no re-entrant calls that block until a lock can be acquired.
     ///
     /// This method uses the configured [`throttle_duration`](Self::set_throttle_duration)
     /// and the internal `throttle_instant` to prevent signals from being emitted
     /// more frequently than allowed.
-    /// 
+    ///
     /// # Arguments
     ///
     /// * `new_value` - The new value of the [`Signaled`].
@@ -1002,82 +1094,95 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
     /// `throttle_instant`, `throttle_duration`, `val`, or `signals` are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if any of the underlying locks for
     /// `throttle_instant`, `throttle_duration`, `val`, or `signals` are held elsewhere.
     pub fn try_set_throttled(&self, new_value: T) -> Result<(), SignaledError> {
-        let mut throttle_instant = self.throttle_instant.try_lock().map_err(|e| {
-            match e {
-                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant },
-                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleInstant }
-            }
+        let mut throttle_instant = self.throttle_instant.try_lock().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::ThrottleInstant,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::ThrottleInstant,
+            },
         })?;
         if Instant::now() < *throttle_instant {
-            return Ok(())
+            return Ok(());
         }
 
         self.try_set(new_value)?;
-        *throttle_instant = Instant::now() + *self.throttle_duration.try_lock().map_err(|e| {
-            match e {
-                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration },
-                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleDuration }
-            }
-        })?;
+        *throttle_instant = Instant::now()
+            + *self.throttle_duration.try_lock().map_err(|e| match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                    source: ErrorSource::ThrottleDuration,
+                },
+                TryLockError::WouldBlock => SignaledError::WouldBlock {
+                    source: ErrorSource::ThrottleDuration,
+                },
+            })?;
 
         Ok(())
     }
 
     /// Returns the lock of the current value.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_get_lock`].
     pub fn get_lock(&self) -> Result<RwLockReadGuard<'_, T>, SignaledError> {
         match self.val.read() {
             Ok(r) => Ok(r),
-            Err(_) => Err(SignaledError::PoisonedLock { source: ErrorSource::Value })
+            Err(_) => Err(SignaledError::PoisonedLock {
+                source: ErrorSource::Value,
+            }),
         }
     }
 
     /// Returns the lock of the current value.
-    /// 
+    ///
     /// This function unlike [`Signaled::get_lock`], is non-blocking so there are no re-entrant calls that block until the lock is acquired.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if `val` lock is held elsewhere.
     pub fn try_get_lock(&self) -> Result<RwLockReadGuard<'_, T>, SignaledError> {
         match self.val.try_read() {
             Ok(r) => Ok(r),
-            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock { source: ErrorSource::Value }),
-            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock { source: ErrorSource::Value })
+            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock {
+                source: ErrorSource::Value,
+            }),
+            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock {
+                source: ErrorSource::Value,
+            }),
         }
     }
 
     /// Emits all [`Signal`]s in descending priority order, invoking their callbacks if their trigger condition is met.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock or [`Signal`]s inside `signals` locks are poisoned.
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_emit_signals`].
     fn emit_signals(&self, old: &T, new: &T) -> Result<(), SignaledError> {
         match self.signals.lock() {
             Ok(mut signals) => {
-                signals.sort_by(|a, b| { 
-                    b.priority.load(Ordering::Relaxed).cmp(&a.priority.load(Ordering::Relaxed))
+                signals.sort_by(|a, b| {
+                    b.priority
+                        .load(Ordering::Relaxed)
+                        .cmp(&a.priority.load(Ordering::Relaxed))
                 });
                 for signal in signals.iter() {
                     signal.emit(old, new)?
@@ -1093,24 +1198,28 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 });
                 Ok(())
             }
-            Err(_) => Err(SignaledError::PoisonedLock { source: ErrorSource::Signals })
+            Err(_) => Err(SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            }),
         }
     }
 
     /// Emits all [`Signal`]s in descending priority order, invoking their callbacks if their trigger condition is met.
-    /// 
+    ///
     /// This function unlike [`Signaled::emit_signals`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock or [`Signal`]s inside `signals` locks are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `signals` lock or [`Signal`]s inside `signals` locks are held elsewhere.
     fn try_emit_signals(&self, old: &T, new: &T) -> Result<(), SignaledError> {
         match self.signals.try_lock() {
             Ok(mut signals) => {
-                signals.sort_by(|a, b| { 
-                    b.priority.load(Ordering::Relaxed).cmp(&a.priority.load(Ordering::Relaxed))
+                signals.sort_by(|a, b| {
+                    b.priority
+                        .load(Ordering::Relaxed)
+                        .cmp(&a.priority.load(Ordering::Relaxed))
                 });
                 for signal in signals.iter() {
                     signal.try_emit(old, new)?
@@ -1126,26 +1235,30 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 });
                 Ok(())
             }
-            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock { source: ErrorSource::Signals }),
-            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock { source: ErrorSource::Signals })
+            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            }),
+            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock {
+                source: ErrorSource::Signals,
+            }),
         }
     }
 
     /// Adds a signal to the collection, returning its [`SignalId`].
-    /// 
+    ///
     /// If a [`Signal`] with the same `id` is already in the collection, returns the existing `id` without adding the [`Signal`] to the collection.
-    /// 
+    ///
     /// # Arguments
     /// * `signal` - The [`Signal`] to add.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_add_signal`].
     pub fn add_signal(&self, signal: Signal<T>) -> Result<SignalId, SignaledError> {
         match self.signals.lock() {
@@ -1157,23 +1270,25 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 s.push(signal);
                 Ok(id)
             }
-            Err(_) => Err(SignaledError::PoisonedLock { source: ErrorSource::Signals })
+            Err(_) => Err(SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            }),
         }
     }
 
     /// Adds a signal to the collection, returning its [`SignalId`].
-    /// 
+    ///
     /// If a [`Signal`] with the same `id` is already in the collection, returns the existing `id` without adding the [`Signal`] to the collection.
-    /// 
+    ///
     /// This function unlike [`Signaled::add_signal`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
-    /// 
+    ///
     /// # Arguments
     /// * `signal` - The [`Signal`] to add.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere.
     pub fn try_add_signal(&self, signal: Signal<T>) -> Result<SignalId, SignaledError> {
         match self.signals.try_lock() {
@@ -1185,8 +1300,12 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 s.push(signal);
                 Ok(id)
             }
-            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock { source: ErrorSource::Signals }),
-            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock { source: ErrorSource::Signals })
+            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            }),
+            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock {
+                source: ErrorSource::Signals,
+            }),
         }
     }
 
@@ -1199,13 +1318,13 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
-    /// 
-    /// # Warnings 
-    /// 
+    ///
+    /// # Warnings
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_remove_signal`].
     pub fn remove_signal(&self, id: SignalId) -> Result<Signal<T>, SignaledError> {
         match self.signals.lock() {
@@ -1216,12 +1335,14 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                     .ok_or_else(|| SignaledError::InvalidSignalId { id: id })?;
                 Ok(s.remove(index))
             }
-            Err(_) => Err(SignaledError::PoisonedLock { source: ErrorSource::Signals })
+            Err(_) => Err(SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            }),
         }
     }
 
     /// Removes a [`Signal`] by `id`, returning the removed [`Signal`].
-    /// 
+    ///
     /// This function unlike [`Signaled::remove_signal`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
     ///
     /// # Arguments
@@ -1231,9 +1352,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere.
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     pub fn try_remove_signal(&self, id: SignalId) -> Result<Signal<T>, SignaledError> {
         match self.signals.try_lock() {
@@ -1244,11 +1365,15 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                     .ok_or_else(|| SignaledError::InvalidSignalId { id: id })?;
                 Ok(s.remove(index))
             }
-            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock { source: ErrorSource::Signals }),
-            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock { source: ErrorSource::Signals })
+            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            }),
+            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock {
+                source: ErrorSource::Signals,
+            }),
         }
     }
- 
+
     /// Sets the callback for a [`Signal`] by `id`.
     ///
     /// # Arguments
@@ -1259,27 +1384,34 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `callback` locks are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_set_signal_callback`].
-    pub fn set_signal_callback<F: Fn(&T, &T) + Send + Sync + 'static>(&self, id: SignalId, callback: F) -> Result<(), SignaledError> {
-        let signals = self.signals
+    pub fn set_signal_callback<F: Fn(&T, &T) + Send + Sync + 'static>(
+        &self,
+        id: SignalId,
+        callback: F,
+    ) -> Result<(), SignaledError> {
+        let signals = self
+            .signals
             .lock()
-            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.set_callback(callback)
+            return signal.set_callback(callback);
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id })
+            return Err(SignaledError::InvalidSignalId { id: id });
         }
     }
 
     /// Sets the callback for a [`Signal`] by `id`.
-    /// 
+    ///
     /// This function unlike [`Signaled::set_signal_callback`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
     ///
     /// # Arguments
@@ -1290,23 +1422,27 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `callback` locks are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `signals` or the targeted [`Signal`] callback are held elsewhere.
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
-    pub fn try_set_signal_callback<F: Fn(&T, &T) + Send + Sync + 'static>(&self, id: SignalId, callback: F) -> Result<(), SignaledError> {
-        let signals = self.signals
-            .try_lock()
-            .map_err(|e| {
-                match e {
-                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
-                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
-                }
-            })?;
+    pub fn try_set_signal_callback<F: Fn(&T, &T) + Send + Sync + 'static>(
+        &self,
+        id: SignalId,
+        callback: F,
+    ) -> Result<(), SignaledError> {
+        let signals = self.signals.try_lock().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::Signals,
+            },
+        })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.try_set_callback(callback)
+            return signal.try_set_callback(callback);
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id })
+            return Err(SignaledError::InvalidSignalId { id: id });
         }
     }
 
@@ -1320,27 +1456,36 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `trigger` locks are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_set_signal_trigger`].
-    pub fn set_signal_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(&self, id: SignalId, trigger: F) -> Result<(), SignaledError> {
-        let signals = self.signals.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
+    pub fn set_signal_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(
+        &self,
+        id: SignalId,
+        trigger: F,
+    ) -> Result<(), SignaledError> {
+        let signals = self
+            .signals
+            .lock()
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.set_trigger(trigger)
+            return signal.set_trigger(trigger);
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id })
+            return Err(SignaledError::InvalidSignalId { id: id });
         }
     }
 
     /// Sets the trigger condition for a [`Signal`] by `id`.
     ///
     /// This function unlike [`Signaled::set_signal_trigger`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
-    /// 
+    ///
     /// # Arguments
     ///
     /// * `id` - The `id` of the [`Signal`].
@@ -1349,76 +1494,89 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `trigger` locks are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `signals` or the targeted [`Signal`] `trigger` locks are held elsewhere.
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
-    pub fn try_set_signal_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(&self, id: SignalId, trigger: F) -> Result<(), SignaledError> {
-        let signals = self.signals.try_lock().map_err(|e| {
-            match e {
-                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
-                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }       
-            }
+    pub fn try_set_signal_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(
+        &self,
+        id: SignalId,
+        trigger: F,
+    ) -> Result<(), SignaledError> {
+        let signals = self.signals.try_lock().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::Signals,
+            },
         })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.try_set_trigger(trigger)
+            return signal.try_set_trigger(trigger);
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id })
+            return Err(SignaledError::InvalidSignalId { id: id });
         }
     }
 
     /// Sets the [`Signal`] `trigger` to always return true by `id`
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `id` - The `id` of the [`Signal`].
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `trigger` locks are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_remove_signal_trigger`].
     pub fn remove_signal_trigger(&self, id: SignalId) -> Result<(), SignaledError> {
-        let signals = self.signals.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
+        let signals = self
+            .signals
+            .lock()
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.remove_trigger()
+            return signal.remove_trigger();
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id })
+            return Err(SignaledError::InvalidSignalId { id: id });
         }
     }
 
     /// Sets the [`Signal`] `trigger` to always return true by `id`
-    /// 
+    ///
     /// This function unlike [`Signaled::remove_signal_trigger`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `id` - The `id` of the [`Signal`].
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `trigger` locks are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `signals` or the targeted [`Signal`] `trigger` locks are held elsewhere.
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     pub fn try_remove_signal_trigger(&self, id: SignalId) -> Result<(), SignaledError> {
-        let signals = self.signals.try_lock().map_err(|e| {
-            match e {
-                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
-                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
-            }
+        let signals = self.signals.try_lock().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::Signals,
+            },
         })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.try_remove_trigger()
+            return signal.try_remove_trigger();
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id })
+            return Err(SignaledError::InvalidSignalId { id: id });
         }
     }
 
@@ -1432,30 +1590,33 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_set_signal_priority`].
     pub fn set_signal_priority(&self, id: SignalId, priority: u64) -> Result<(), SignaledError> {
-        let signals = self.signals
+        let signals = self
+            .signals
             .lock()
-            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_priority(priority);
-            return Ok(())
+            return Ok(());
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id })
+            return Err(SignaledError::InvalidSignalId { id: id });
         }
     }
 
     /// Sets the priority for a [`Signal`] by `id`.
     ///
     /// This function unlike [`Signaled::set_signal_priority`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
-    /// 
+    ///
     /// # Arguments
     ///
     /// * `id` - The `id` of the [`Signal`].
@@ -1464,24 +1625,28 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
-    pub fn try_set_signal_priority(&self, id: SignalId, priority: u64) -> Result<(), SignaledError> {
-        let signals = self.signals
-            .try_lock()
-            .map_err(|e| {
-                match e {
-                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
-                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
-                }
-            })?;
+    pub fn try_set_signal_priority(
+        &self,
+        id: SignalId,
+        priority: u64,
+    ) -> Result<(), SignaledError> {
+        let signals = self.signals.try_lock().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::Signals,
+            },
+        })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_priority(priority);
-            return Ok(())
+            return Ok(());
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id })
+            return Err(SignaledError::InvalidSignalId { id: id });
         }
     }
 
@@ -1495,30 +1660,33 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     ///     
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_set_signal_once`].
     pub fn set_signal_once(&self, id: SignalId, is_once: bool) -> Result<(), SignaledError> {
-        let signals = self.signals
+        let signals = self
+            .signals
             .lock()
-            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_once(is_once);
-            return Ok(())
+            return Ok(());
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id })
+            return Err(SignaledError::InvalidSignalId { id: id });
         }
     }
 
     /// Sets the `once` flag for a [`Signal`] by `id`.
     ///
     /// This function unlike [`Signaled::set_signal_once`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
-    /// 
+    ///
     /// # Arguments
     ///
     /// * `id` - The `id` of the [`Signal`].
@@ -1527,24 +1695,24 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     pub fn try_set_signal_once(&self, id: SignalId, is_once: bool) -> Result<(), SignaledError> {
-        let signals = self.signals
-            .try_lock()
-            .map_err(|e| {
-                match e {
-                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
-                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
-                }
-            })?;
+        let signals = self.signals.try_lock().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::Signals,
+            },
+        })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_once(is_once);
-            return Ok(())
+            return Ok(());
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id })
+            return Err(SignaledError::InvalidSignalId { id: id });
         }
     }
 
@@ -1558,30 +1726,33 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_set_signal_mute`].
     pub fn set_signal_mute(&self, id: SignalId, is_mute: bool) -> Result<(), SignaledError> {
-        let signals = self.signals
+        let signals = self
+            .signals
             .lock()
-            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_mute(is_mute);
-            return Ok(())
+            return Ok(());
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id })
+            return Err(SignaledError::InvalidSignalId { id: id });
         }
     }
-    
+
     /// Sets the `mute` flag for a [`Signal`] by `id`.
     ///
     /// This function unlike [`Signaled::set_signal_mute`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
-    /// 
+    ///
     /// # Arguments
     ///
     /// * `id` - The `id` of the [`Signal`].
@@ -1590,89 +1761,92 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
     pub fn try_set_signal_mute(&self, id: SignalId, is_mute: bool) -> Result<(), SignaledError> {
-        let signals = self.signals
-            .try_lock()
-            .map_err(|e| {
-                match e {
-                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
-                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
-                }
-            })?;
+        let signals = self.signals.try_lock().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::Signals,
+            },
+        })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_mute(is_mute);
-            return Ok(())
+            return Ok(());
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id })
+            return Err(SignaledError::InvalidSignalId { id: id });
         }
     }
 
     /// Combines multiple [`Signal`]s by their `id` into a single [`Signal`].
-    /// 
+    ///
     /// This function finds signals by their `id`, removes them from the `Signaled` instance,
     /// and then uses [`Signal::combine()`] to create a new, single [`Signal`] instance.
     /// This new combined signal is then added back to the `signals` collection and its new `SignalId` is returned.
-    /// 
+    ///
     /// For more details about the combination process,
     /// see the documentation for [`Signal::combine()`].
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `signal_ids` A slice containing the `id`s of the [`Signal`]s that will be combined into a single [`Signal`].
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` or any target [`Signal`] `callback` or `trigger` locks are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the any of the provided `SignalId` does not match any [`Signal`].
-    /// 
+    ///
     /// # Examples
     /// ```
     /// use std::sync::{Arc, Mutex};
     /// use signaled::{signal_sync, sync::{Signal, Signaled}};
-    /// 
+    ///
     /// let signaled = Signaled::new(0);
-    /// 
+    ///
     /// let calls = Arc::new(Mutex::new(0));
-    /// 
+    ///
     /// let calls_clone = Arc::clone(&calls);
     /// let signal_a = signal_sync!(move |_, _| {
     ///     let mut lock = calls_clone.lock().unwrap();
     ///     *lock = *lock + 1;
     /// });
     /// let signal_a_id = signaled.add_signal(signal_a).unwrap();
-    /// 
+    ///
     /// let calls_clone = Arc::clone(&calls);
     /// let signal_b = signal_sync!(move |_, _| {
     ///     let mut lock = calls_clone.lock().unwrap();
     ///     *lock = *lock + 2;
     /// });
     /// let signal_b_id = signaled.add_signal(signal_b).unwrap();
-    /// 
+    ///
     /// signaled.combine_signals(&[signal_a_id, signal_b_id]).unwrap();
-    /// 
+    ///
     /// signaled.set(1).unwrap();
     /// assert_eq!(*calls.lock().unwrap(), 3); // `signal_a` increases calls by 1 and `signal_b` increases calls by 2 so the `combined` signal increases calls by 3
     /// ```
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_combine_signals`].
     pub fn combine_signals(&self, signal_ids: &[SignalId]) -> Result<SignalId, SignaledError> {
         let mut target_signals = Vec::new();
-        let mut signals = self.signals
+        let mut signals = self
+            .signals
             .lock()
-            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            })?;
 
         for &id in signal_ids {
             if !signals.iter().any(|s| s.id == id) {
-                return Err(SignaledError::InvalidSignalId { id: id })
+                return Err(SignaledError::InvalidSignalId { id: id });
             }
         }
 
@@ -1691,72 +1865,71 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         Ok(id)
     }
 
-
     /// Combines multiple [`Signal`]s by their `id` into a single [`Signal`].
-    /// 
+    ///
     /// This function unlike [`Signaled::combine_signals`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
-    /// 
+    ///
     /// This function finds signals by their `id`, removes them from the `Signaled` instance,
     /// and then uses [`Signal::try_combine()`] to create a new, single [`Signal`] instance.
     /// This new combined signal is then added back to the `signals` collection and its new `SignalId` is returned.
-    /// 
+    ///
     /// For more details about the combination process,
     /// see the documentation for [`Signal::try_combine()`].
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `signal_ids` A slice containing the `id`s of the [`Signal`]s that will be combined into a single [`Signal`].
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if the `signals` or any target [`Signal`] `callback` or `trigger` locks are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere.
-    /// 
+    ///
     /// Returns [`SignaledError::InvalidSignalId`] if the any of the provided `SignalId` does not match any [`Signal`].
-    /// 
+    ///
     /// # Examples
     /// ```
     /// use std::sync::{Arc, Mutex};
     /// use signaled::{signal_sync, sync::{Signal, Signaled}};
-    /// 
+    ///
     /// let signaled = Signaled::new(0);
-    /// 
+    ///
     /// let calls = Arc::new(Mutex::new(0));
-    /// 
+    ///
     /// let calls_clone = Arc::clone(&calls);
     /// let signal_a = signal_sync!(move |_, _| {
     ///     let mut lock = calls_clone.lock().unwrap();
     ///     *lock = *lock + 1;
     /// });
     /// let signal_a_id = signaled.add_signal(signal_a).unwrap();
-    /// 
+    ///
     /// let calls_clone = Arc::clone(&calls);
     /// let signal_b = signal_sync!(move |_, _| {
     ///     let mut lock = calls_clone.lock().unwrap();
     ///     *lock = *lock + 2;
     /// });
     /// let signal_b_id = signaled.add_signal(signal_b).unwrap();
-    /// 
+    ///
     /// signaled.try_combine_signals(&[signal_a_id, signal_b_id]).unwrap();
-    /// 
+    ///
     /// signaled.set(1).unwrap();
     /// assert_eq!(*calls.lock().unwrap(), 3); // `signal_a` increases calls by 1 and `signal_b` increases calls by 2 so the `combined` signal increases calls by 3
     /// ```
     pub fn try_combine_signals(&self, signal_ids: &[SignalId]) -> Result<SignalId, SignaledError> {
         let mut target_signals = Vec::new();
-        let mut signals = self.signals
-            .try_lock()
-            .map_err(|e| {
-                match e {
-                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
-                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
-                }
-            })?;
+        let mut signals = self.signals.try_lock().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::Signals,
+            },
+        })?;
 
         for &id in signal_ids {
             if !signals.iter().any(|s| s.id == id) {
-                return Err(SignaledError::InvalidSignalId { id: id })
+                return Err(SignaledError::InvalidSignalId { id: id });
             }
         }
 
@@ -1778,17 +1951,28 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
 impl<T: Display + Send + Sync + 'static> Display for Signaled<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = self.val.try_read()
+        let value = self
+            .val
+            .try_read()
             .map(|v| v.to_string())
             .unwrap_or_else(|_| "<locked>".to_string());
 
-        let signals_display = self.signals.try_lock().map(|signals| {
-            let signals_str = signals.iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("signal_count: {}, signals: [{}]", signals.len(), signals_str)
-        }).unwrap_or_else(|_| "signals: <locked>".to_string());
+        let signals_display = self
+            .signals
+            .try_lock()
+            .map(|signals| {
+                let signals_str = signals
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "signal_count: {}, signals: [{}]",
+                    signals.len(),
+                    signals_str
+                )
+            })
+            .unwrap_or_else(|_| "signals: <locked>".to_string());
 
         write!(f, "Signaled {{ val: {}, {} }}", value, signals_display)
     }
@@ -1809,10 +1993,9 @@ impl<T: Debug + Send + Sync + 'static> Debug for Signaled<T> {
     }
 }
 
-
 impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     /// Sets a new value for `val` and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread.
-    /// 
+    ///
     /// The returned [`JoinHandle`] will contain a [`SignaledError`] if any [`Signal`] emission failed.
     ///
     /// # Arguments
@@ -1833,25 +2016,34 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     /// let handle = signaled.set_and_spawn(1).unwrap();
     /// handle.join();
     /// ```
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_set_and_spawn`].
-    pub fn set_and_spawn(&self, new_value: T) -> Result<JoinHandle<Result<(), SignaledError>>, SignaledError> {
-        let mut guard = self.val
-            .write()
-            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Value })?;
+    pub fn set_and_spawn(
+        &self,
+        new_value: T,
+    ) -> Result<JoinHandle<Result<(), SignaledError>>, SignaledError> {
+        let mut guard = self.val.write().map_err(|_| SignaledError::PoisonedLock {
+            source: ErrorSource::Value,
+        })?;
         let old_value = std::mem::replace(&mut *guard, new_value);
         let new_value_clone = (*guard).clone();
         drop(guard);
 
         let signals_clone = Arc::clone(&self.signals);
         let handle = thread::spawn(move || -> Result<(), SignaledError> {
-            let mut signals = signals_clone.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
-            signals.sort_by(|a, b| { 
-                b.priority.load(Ordering::Relaxed).cmp(&a.priority.load(Ordering::Relaxed))
+            let mut signals = signals_clone
+                .lock()
+                .map_err(|_| SignaledError::PoisonedLock {
+                    source: ErrorSource::Signals,
+                })?;
+            signals.sort_by(|a, b| {
+                b.priority
+                    .load(Ordering::Relaxed)
+                    .cmp(&a.priority.load(Ordering::Relaxed))
             });
             for signal in signals.iter() {
                 signal.emit(&old_value, &new_value_clone)?;
@@ -1870,11 +2062,10 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
         Ok(handle)
     }
 
-
     /// Sets a new value for `val` and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread.
-    /// 
+    ///
     /// The returned [`JoinHandle`] will contain a [`SignaledError`] if any [`Signal`] emission failed.
-    /// 
+    ///
     /// This function unlike [`Signaled::set_and_spawn`], is non-blocking so there are no re-entrant calls that block until `val` or `signals` lock can be acquired.
     ///
     /// # Arguments
@@ -1884,7 +2075,7 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if `val` or `signals` locks are poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if `val` or `signals` locks are held elsewhere.
     ///
     /// # Examples
@@ -1897,29 +2088,36 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     /// let handle = signaled.try_set_and_spawn(1).unwrap();
     /// handle.join();
     /// ```
-    pub fn try_set_and_spawn(&self, new_value: T) -> Result<JoinHandle<Result<(), SignaledError>>, SignaledError> {
-        let mut guard = self.val
-            .try_write()
-            .map_err(|e| {
-                match e {
-                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Value },
-                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Value }
-                }
-            })?;
+    pub fn try_set_and_spawn(
+        &self,
+        new_value: T,
+    ) -> Result<JoinHandle<Result<(), SignaledError>>, SignaledError> {
+        let mut guard = self.val.try_write().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::Value,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::Value,
+            },
+        })?;
         let old_value = std::mem::replace(&mut *guard, new_value);
         let new_value_clone = (*guard).clone();
         drop(guard);
 
         let signals_clone = Arc::clone(&self.signals);
         let handle = thread::spawn(move || -> Result<(), SignaledError> {
-            let mut signals = signals_clone.try_lock().map_err(|e| {
-                match e {
-                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
-                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
-                }
+            let mut signals = signals_clone.try_lock().map_err(|e| match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                    source: ErrorSource::Signals,
+                },
+                TryLockError::WouldBlock => SignaledError::WouldBlock {
+                    source: ErrorSource::Signals,
+                },
             })?;
-            signals.sort_by(|a, b| { 
-                b.priority.load(Ordering::Relaxed).cmp(&a.priority.load(Ordering::Relaxed))
+            signals.sort_by(|a, b| {
+                b.priority
+                    .load(Ordering::Relaxed)
+                    .cmp(&a.priority.load(Ordering::Relaxed))
             });
             for signal in signals.iter() {
                 signal.try_emit(&old_value, &new_value_clone)?;
@@ -1940,11 +2138,11 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
 
     /// Sets a new value for `val` and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread,
     /// but only if enough time has passed since the previous throttled update.
-    /// 
+    ///
     /// This method uses the configured [`throttle_duration`](Self::set_throttle_duration)
     /// and the internal `throttle_instant` to prevent signals from being emitted
     /// more frequently than allowed.
-    /// 
+    ///
     /// The returned [`JoinHandle`] will contain a [`SignaledError`] if any [`Signal`] emission failed.
     ///
     /// # Arguments
@@ -1953,7 +2151,7 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for 
+    /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
     /// `throttle_instant`, `throttle_duration`, `val` or `signals` locks are poisoned.
     ///
     /// # Examples
@@ -1984,30 +2182,44 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     /// signaled.set_throttled_and_spawn(()).unwrap().join().unwrap().unwrap();
     /// assert_eq!(*calls.lock().unwrap(), 2);
     /// ```
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_set_throttled_and_spawn`].
-    pub fn set_throttled_and_spawn(&self, new_value: T) -> Result<JoinHandle<Result<(), SignaledError>>, SignaledError> {
-        let mut throttle_instant = self.throttle_instant.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant })?;
+    pub fn set_throttled_and_spawn(
+        &self,
+        new_value: T,
+    ) -> Result<JoinHandle<Result<(), SignaledError>>, SignaledError> {
+        let mut throttle_instant =
+            self.throttle_instant
+                .lock()
+                .map_err(|_| SignaledError::PoisonedLock {
+                    source: ErrorSource::ThrottleInstant,
+                })?;
         if Instant::now() < *throttle_instant {
-            return Ok(thread::spawn(|| Ok(())))
+            return Ok(thread::spawn(|| Ok(())));
         }
 
-        let mut guard = self.val
-            .write()
-            .map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Value })?;
+        let mut guard = self.val.write().map_err(|_| SignaledError::PoisonedLock {
+            source: ErrorSource::Value,
+        })?;
         let old_value = std::mem::replace(&mut *guard, new_value);
         let new_value_clone = (*guard).clone();
         drop(guard);
 
         let signals_clone = Arc::clone(&self.signals);
         let handle = thread::spawn(move || -> Result<(), SignaledError> {
-            let mut signals = signals_clone.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::Signals })?;
-            signals.sort_by(|a, b| { 
-                b.priority.load(Ordering::Relaxed).cmp(&a.priority.load(Ordering::Relaxed))
+            let mut signals = signals_clone
+                .lock()
+                .map_err(|_| SignaledError::PoisonedLock {
+                    source: ErrorSource::Signals,
+                })?;
+            signals.sort_by(|a, b| {
+                b.priority
+                    .load(Ordering::Relaxed)
+                    .cmp(&a.priority.load(Ordering::Relaxed))
             });
             for signal in signals.iter() {
                 signal.emit(&old_value, &new_value_clone)?;
@@ -2023,20 +2235,25 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
             });
             Ok(())
         });
-        *throttle_instant = Instant::now() + *self.throttle_duration.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration })?;
+        *throttle_instant = Instant::now()
+            + *self
+                .throttle_duration
+                .lock()
+                .map_err(|_| SignaledError::PoisonedLock {
+                    source: ErrorSource::ThrottleDuration,
+                })?;
         Ok(handle)
     }
 
-
     /// Sets a new value for `val` and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread,
     /// but only if enough time has passed since the previous throttled update.
-    /// 
+    ///
     /// This function unlike [`Signaled::set_throttled_and_spawn`], is non-blocking so there are no re-entrant calls that block until the lock can be acquired.
-    /// 
+    ///
     /// This method uses the configured [`throttle_duration`](Self::set_throttle_duration)
     /// and the internal `throttle_instant` to prevent signals from being emitted
     /// more frequently than allowed.
-    /// 
+    ///
     /// The returned [`JoinHandle`] will contain a [`SignaledError`] if any [`Signal`] emission failed.
     ///
     /// # Arguments
@@ -2045,44 +2262,53 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for 
+    /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
     /// `throttle_instant`, `throttle_duration`, `val` or `signals` locks are poisoned.
-    /// 
-    /// Returns [`SignaledError::WouldBlock`] if any of the underlying locks for 
+    ///
+    /// Returns [`SignaledError::WouldBlock`] if any of the underlying locks for
     /// `throttle_instant`, `throttle_duration`, `val` or `signals` locks are held elsewhere.
-    pub fn try_set_throttled_and_spawn(&self, new_value: T) -> Result<JoinHandle<Result<(), SignaledError>>, SignaledError> {
-        let mut throttle_instant = self.throttle_instant.try_lock().map_err(|e| {
-            match e {
-                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant },
-                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleInstant }
-            }
+    pub fn try_set_throttled_and_spawn(
+        &self,
+        new_value: T,
+    ) -> Result<JoinHandle<Result<(), SignaledError>>, SignaledError> {
+        let mut throttle_instant = self.throttle_instant.try_lock().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::ThrottleInstant,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::ThrottleInstant,
+            },
         })?;
         if Instant::now() < *throttle_instant {
-            return Ok(thread::spawn(|| Ok(())))
+            return Ok(thread::spawn(|| Ok(())));
         }
 
-        let mut guard = self.val
-            .try_write()
-            .map_err(|e| {
-                match e {
-                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Value },
-                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Value }
-                }
-            })?;
+        let mut guard = self.val.try_write().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::Value,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::Value,
+            },
+        })?;
         let old_value = std::mem::replace(&mut *guard, new_value);
         let new_value_clone = (*guard).clone();
         drop(guard);
 
         let signals_clone = Arc::clone(&self.signals);
         let handle = thread::spawn(move || -> Result<(), SignaledError> {
-            let mut signals = signals_clone.try_lock().map_err(|e| {
-                match e {
-                    TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::Signals },
-                    TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::Signals }
-                }
+            let mut signals = signals_clone.try_lock().map_err(|e| match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                    source: ErrorSource::Signals,
+                },
+                TryLockError::WouldBlock => SignaledError::WouldBlock {
+                    source: ErrorSource::Signals,
+                },
             })?;
-            signals.sort_by(|a, b| { 
-                b.priority.load(Ordering::Relaxed).cmp(&a.priority.load(Ordering::Relaxed))
+            signals.sort_by(|a, b| {
+                b.priority
+                    .load(Ordering::Relaxed)
+                    .cmp(&a.priority.load(Ordering::Relaxed))
             });
             for signal in signals.iter() {
                 signal.try_emit(&old_value, &new_value_clone)?;
@@ -2099,12 +2325,15 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
             Ok(())
         });
 
-        *throttle_instant = Instant::now() + *self.throttle_duration.try_lock().map_err(|e| {
-            match e {
-                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration },
-                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleDuration }
-            }
-        })?;
+        *throttle_instant = Instant::now()
+            + *self.throttle_duration.try_lock().map_err(|e| match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                    source: ErrorSource::ThrottleDuration,
+                },
+                TryLockError::WouldBlock => SignaledError::WouldBlock {
+                    source: ErrorSource::ThrottleDuration,
+                },
+            })?;
         Ok(handle)
     }
 
@@ -2113,33 +2342,39 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
-    /// 
+    ///
     /// # Warnings
-    /// 
+    ///
     /// This function may result in a deadlock if used incorrectly.
-    /// 
+    ///
     /// For a non-blocking alternative, see [`Signaled::try_get`].
     pub fn get(&self) -> Result<T, SignaledError> {
         match self.val.read() {
             Ok(r) => Ok(r.clone()),
-            Err(_) => Err(SignaledError::PoisonedLock { source: ErrorSource::Value })
+            Err(_) => Err(SignaledError::PoisonedLock {
+                source: ErrorSource::Value,
+            }),
         }
     }
 
     /// Returns a cloned copy of the current value.
-    /// 
+    ///
     /// This function unlike [`Signaled::get`], is non-blocking so there are no re-entrant calls that block until the lock is acquired.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
-    /// 
+    ///
     /// Returns [`SignaledError::WouldBlock`] if `val` lock is held elsewhere.
     pub fn try_get(&self) -> Result<T, SignaledError> {
         match self.val.try_read() {
             Ok(r) => Ok(r.clone()),
-            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock { source: ErrorSource::Value }),
-            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock { source: ErrorSource::Value })
+            Err(TryLockError::WouldBlock) => Err(SignaledError::WouldBlock {
+                source: ErrorSource::Value,
+            }),
+            Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock {
+                source: ErrorSource::Value,
+            }),
         }
     }
 }
@@ -2158,10 +2393,12 @@ mod tests {
         let calls_clone = Arc::clone(&calls);
 
         let signaled = Signaled::new(1);
-        signaled.add_signal(signal_sync!(move |_, _| { 
-            let mut lock = calls_clone.lock().unwrap();
-            *lock = *lock + 1;
-        })).unwrap();
+        signaled
+            .add_signal(signal_sync!(move |_, _| {
+                let mut lock = calls_clone.lock().unwrap();
+                *lock = *lock + 1;
+            }))
+            .unwrap();
 
         signaled.set(2).unwrap(); // Calls = 1
         assert_eq!(*calls.lock().unwrap(), 1);
@@ -2172,7 +2409,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(0));
         let calls_clone = Arc::clone(&calls);
 
-        let signal: Signal<i32> = signal_sync!(move |_, _| { 
+        let signal: Signal<i32> = signal_sync!(move |_, _| {
             let mut lock = calls_clone.lock().unwrap();
             *lock = *lock + 1;
         });
@@ -2183,7 +2420,7 @@ mod tests {
 
         signaled.set(4).unwrap(); // This does not meet the trigger condition (new_value < 5). Calls = 0
         assert_eq!(*calls.lock().unwrap(), 0);
-        
+
         signaled.set(6).unwrap(); // This does meet the trigger condition (new_value > 5). Calls = 1
         assert_eq!(*calls.lock().unwrap(), 1);
     }
@@ -2194,11 +2431,13 @@ mod tests {
         let calls_clone = Arc::clone(&calls);
 
         let signaled = Signaled::new(1);
-        let signal_id = signaled.add_signal(signal_sync!(move |_, _| { 
-            let mut lock = calls_clone.lock().unwrap();
-            *lock = *lock + 1;
-        })).unwrap();
-        
+        let signal_id = signaled
+            .add_signal(signal_sync!(move |_, _| {
+                let mut lock = calls_clone.lock().unwrap();
+                *lock = *lock + 1;
+            }))
+            .unwrap();
+
         signaled.set(2).unwrap(); // Calls = 1
         assert_eq!(*calls.lock().unwrap(), 1);
 
@@ -2207,7 +2446,7 @@ mod tests {
 
         signaled.remove_signal(signal_id).unwrap(); // Signal removed so `calls` will not increase when `signaled` emits.
 
-        signaled.set(4).unwrap();// Calls = 2
+        signaled.set(4).unwrap(); // Calls = 2
         assert_eq!(*calls.lock().unwrap(), 2);
     }
 
@@ -2216,7 +2455,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(0));
         let calls_clone = Arc::clone(&calls);
 
-        let signal: Signal<i32> = signal_sync!(move |_, _| { 
+        let signal: Signal<i32> = signal_sync!(move |_, _| {
             let mut lock = calls_clone.lock().unwrap();
             *lock = *lock + 1;
         });
@@ -2244,11 +2483,13 @@ mod tests {
         let calls_clone = Arc::clone(&calls);
 
         let signaled = Signaled::new(1);
-        let signal_id = signaled.add_signal(signal_sync!(move |_, _| { 
-            let mut lock = calls_clone.lock().unwrap();
-            *lock = *lock + 1;
-        })).unwrap();
-        
+        let signal_id = signaled
+            .add_signal(signal_sync!(move |_, _| {
+                let mut lock = calls_clone.lock().unwrap();
+                *lock = *lock + 1;
+            }))
+            .unwrap();
+
         signaled.set(2).unwrap(); // Calls = 1
         assert_eq!(*calls.lock().unwrap(), 1);
 
@@ -2256,12 +2497,14 @@ mod tests {
         assert_eq!(*calls.lock().unwrap(), 2);
 
         let calls_clone = Arc::clone(&calls);
-        signaled.set_signal_callback(signal_id,  move |_, _| {
-            let mut lock = calls_clone.lock().unwrap();
-            *lock = *lock + 2;
-        }).unwrap(); // New callback increases call count by 2.
+        signaled
+            .set_signal_callback(signal_id, move |_, _| {
+                let mut lock = calls_clone.lock().unwrap();
+                *lock = *lock + 2;
+            })
+            .unwrap(); // New callback increases call count by 2.
 
-        signaled.set(4).unwrap();// Calls = 4
+        signaled.set(4).unwrap(); // Calls = 4
         assert_eq!(*calls.lock().unwrap(), 4);
     }
 
@@ -2270,7 +2513,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(0));
         let calls_clone = Arc::clone(&calls);
 
-        let signal: Signal<i32> = signal_sync!(move |_, _| { 
+        let signal: Signal<i32> = signal_sync!(move |_, _| {
             let mut lock = calls_clone.lock().unwrap();
             *lock = *lock + 1;
         });
@@ -2285,7 +2528,9 @@ mod tests {
         signaled.set(6).unwrap(); // This does meet the trigger condition (new_value > 5). Calls = 1
         assert_eq!(*calls.lock().unwrap(), 1);
 
-        signaled.set_signal_trigger(signal_id, |_, new| { *new < 5 }).unwrap(); // Trigger condition changed so `new_value` being < 5 will invoke callback.
+        signaled
+            .set_signal_trigger(signal_id, |_, new| *new < 5)
+            .unwrap(); // Trigger condition changed so `new_value` being < 5 will invoke callback.
 
         signaled.set(6).unwrap(); // This does not meet the new trigger condition (new_value > 5). Calls = 1
         assert_eq!(*calls.lock().unwrap(), 1);
@@ -2299,21 +2544,22 @@ mod tests {
         let signaled = Signaled::new(0);
 
         let test_value = Arc::new(Mutex::new(' '));
-        
+
         let test_value_clone = Arc::clone(&test_value);
-        let signal_a: Signal<i32> = signal_sync!(move |_, _| { 
-            *test_value_clone.lock().unwrap() = 'a'; 
+        let signal_a: Signal<i32> = signal_sync!(move |_, _| {
+            *test_value_clone.lock().unwrap() = 'a';
         });
         signal_a.set_priority(3);
 
         let test_value_clone = Arc::clone(&test_value);
-        let signal_b: Signal<i32> = signal_sync!(move |_, _| { assert_eq!(*test_value_clone.lock().unwrap(), 'a'); }); // Signal in the middle with a callback that checks that `signal_a` callback has been invoked first.
+        let signal_b: Signal<i32> = signal_sync!(move |_, _| {
+            assert_eq!(*test_value_clone.lock().unwrap(), 'a');
+        }); // Signal in the middle with a callback that checks that `signal_a` callback has been invoked first.
         signal_b.set_priority(2);
 
         let test_value_clone = Arc::clone(&test_value);
-        let signal_c: Signal<i32> = signal_sync!(move |_, _| {
-            *test_value_clone.lock().unwrap() = 'c'
-        });
+        let signal_c: Signal<i32> =
+            signal_sync!(move |_, _| { *test_value_clone.lock().unwrap() = 'c' });
         signal_c.set_priority(1);
 
         let signal_a_id = signaled.add_signal(signal_a).unwrap();
@@ -2326,7 +2572,11 @@ mod tests {
         signaled.set_signal_priority(signal_a_id, 1).unwrap(); // Set priority to 1, `signal_a` will now be the last to execute.
 
         let test_value_clone = Arc::clone(&test_value);
-        signaled.set_signal_callback(signal_b_id, move |_, _| { assert_eq!(*test_value_clone.lock().unwrap(), 'c') }).unwrap(); // Modify signal in the middle callback to check that `signal_c` callback has been invoked first.
+        signaled
+            .set_signal_callback(signal_b_id, move |_, _| {
+                assert_eq!(*test_value_clone.lock().unwrap(), 'c')
+            })
+            .unwrap(); // Modify signal in the middle callback to check that `signal_c` callback has been invoked first.
 
         signaled.set_signal_priority(signal_c_id, 3).unwrap(); // Set priority to 3, `signal_c` will now be the first to execute.
 
@@ -2340,7 +2590,7 @@ mod tests {
         let signal_a: Signal<i32> = signal_sync!(|_, _| {});
         let signal_b: Signal<i32> = signal_sync!(|_, _| {});
         signal_b.set_once(true);
-        
+
         signaled.add_signal(signal_a).unwrap();
         signaled.add_signal(signal_b).unwrap();
 
@@ -2402,16 +2652,20 @@ mod tests {
     fn test_old_new() {
         {
             let signaled = Signaled::new(0);
-            signaled.add_signal(signal_sync!(|old, new| assert!(*new == *old + 1))).unwrap();
-            
+            signaled
+                .add_signal(signal_sync!(|old, new| assert!(*new == *old + 1)))
+                .unwrap();
+
             for i in 1..10 {
                 signaled.set(i).unwrap();
             }
         }
         {
             let signaled = Signaled::new(0);
-            signaled.add_signal(signal_sync!(|old, new| assert!(*new == *old + 1))).unwrap();
-            
+            signaled
+                .add_signal(signal_sync!(|old, new| assert!(*new == *old + 1)))
+                .unwrap();
+
             for i in 1..10 {
                 signaled.try_set(i).unwrap();
             }
@@ -2445,10 +2699,12 @@ mod tests {
         let signaled = Signaled::new(0);
 
         let calls_clone = Arc::clone(&calls);
-        signaled.add_signal(signal_sync!(move |_, _| {
-            let mut lock = calls_clone.lock().unwrap();
-            *lock = *lock + 1;
-        })).unwrap();
+        signaled
+            .add_signal(signal_sync!(move |_, _| {
+                let mut lock = calls_clone.lock().unwrap();
+                *lock = *lock + 1;
+            }))
+            .unwrap();
 
         for i in 0..10 {
             signaled.try_set(i).unwrap();
@@ -2465,10 +2721,14 @@ mod tests {
         let signaled = Arc::new(Mutex::new(Signaled::new(())));
 
         let calls_clone = Arc::clone(&calls);
-        signaled.lock().unwrap().add_signal(signal_sync!(move |_, _| {
-            let mut lock = calls_clone.lock().unwrap();
-            *lock = *lock + 1;
-        })).unwrap();
+        signaled
+            .lock()
+            .unwrap()
+            .add_signal(signal_sync!(move |_, _| {
+                let mut lock = calls_clone.lock().unwrap();
+                *lock = *lock + 1;
+            }))
+            .unwrap();
 
         let mut handles = Vec::new();
 
@@ -2521,11 +2781,10 @@ mod tests {
         assert_eq!(*calls.lock().unwrap(), 1); // Signal is `once` so the first thread that calls it removes it from the `signals` collection.
     }
 
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     macro_rules! test_signaled_would_block_error {
-        ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr) => { 
+        ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr) => {
             #[test]
             fn $test_name() {
                 let signaled = Signaled::new(0);
@@ -2534,7 +2793,7 @@ mod tests {
                 assert!(signaled.$method($($args),*).is_err_and(|e| e == err));
             }
         };
-        ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr, $use_id:tt) => { 
+        ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr, $use_id:tt) => {
             #[test]
             fn $test_name() {
                 let signaled = Signaled::new(0);
@@ -2582,7 +2841,7 @@ mod tests {
     test_signal_would_block_error!(test_try_set_trigger_would_block_error, trigger, write, try_set_trigger, |_, _| true; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
     test_signal_would_block_error!(test_try_remove_trigger_would_block_error, trigger, write, try_remove_trigger; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     macro_rules! create_poisoned_signaled {
         ($lock:ident, $get_lock:ident) => {{
@@ -2652,7 +2911,7 @@ mod tests {
     test_signaled_poisoned_lock!(test_combine_signals_poisoned_lock_error, signals, lock, combine_signals, &[1, 2]; SignaledError::PoisonedLock { source: ErrorSource::Signals });
     test_signaled_poisoned_lock!(test_try_combine_signals_poisoned_lock_error, signals, lock, try_combine_signals, &[1, 2]; SignaledError::PoisonedLock { source: ErrorSource::Signals });
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     macro_rules! test_signal_poisoned_lock {
         ($test_name:ident, $lock:ident, $method:ident $(, $args:expr)*; $error:expr) => {
@@ -2681,7 +2940,7 @@ mod tests {
     test_signal_poisoned_lock!(test_remove_trigger_poisoned_lock_error, trigger, remove_trigger; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
     test_signal_poisoned_lock!(test_try_remove_trigger_poisoned_lock_error, trigger, try_remove_trigger; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     fn create_signaled_with_invalid_id() -> (Signaled<i32>, SignalId) {
         let signaled = Signaled::new(0);
@@ -2703,47 +2962,117 @@ mod tests {
         };
     }
     test_invalid_id_error!(test_remove_signal_invalid_signal_id_error, remove_signal,);
-    test_invalid_id_error!(test_try_remove_signal_invalid_signal_id_error, try_remove_signal,);
-    test_invalid_id_error!(test_set_signal_callback_invalid_signal_id_error, set_signal_callback, |_, _| {});
-    test_invalid_id_error!(test_try_set_signal_callback_invalid_signal_id_error, try_set_signal_callback, |_, _| {});
-    test_invalid_id_error!(test_set_signal_trigger_invalid_signal_id_error, set_signal_trigger, |_, _| true);
-    test_invalid_id_error!(test_try_set_signal_trigger_invalid_signal_id_error, try_set_signal_trigger, |_, _| true);
-    test_invalid_id_error!(test_remove_signal_trigger_invalid_signal_id_error, remove_signal_trigger,);
-    test_invalid_id_error!(test_try_remove_signal_trigger_invalid_signal_id_error, try_remove_signal_trigger,);
-    test_invalid_id_error!(test_set_signal_priority_invalid_signal_id_error, set_signal_priority, 1);
-    test_invalid_id_error!(test_try_set_signal_priority_invalid_signal_id_error, try_set_signal_priority, 1);
-    test_invalid_id_error!(test_set_signal_once_invalid_signal_id_error, set_signal_once, true);
-    test_invalid_id_error!(test_try_set_signal_once_invalid_signal_id_error, try_set_signal_once, true);
-    test_invalid_id_error!(test_set_signal_mute_invalid_signal_id_error, set_signal_mute, true);
-    test_invalid_id_error!(test_try_set_signal_mute_invalid_signal_id_error, try_set_signal_mute, true);
+    test_invalid_id_error!(
+        test_try_remove_signal_invalid_signal_id_error,
+        try_remove_signal,
+    );
+    test_invalid_id_error!(
+        test_set_signal_callback_invalid_signal_id_error,
+        set_signal_callback,
+        |_, _| {}
+    );
+    test_invalid_id_error!(
+        test_try_set_signal_callback_invalid_signal_id_error,
+        try_set_signal_callback,
+        |_, _| {}
+    );
+    test_invalid_id_error!(
+        test_set_signal_trigger_invalid_signal_id_error,
+        set_signal_trigger,
+        |_, _| true
+    );
+    test_invalid_id_error!(
+        test_try_set_signal_trigger_invalid_signal_id_error,
+        try_set_signal_trigger,
+        |_, _| true
+    );
+    test_invalid_id_error!(
+        test_remove_signal_trigger_invalid_signal_id_error,
+        remove_signal_trigger,
+    );
+    test_invalid_id_error!(
+        test_try_remove_signal_trigger_invalid_signal_id_error,
+        try_remove_signal_trigger,
+    );
+    test_invalid_id_error!(
+        test_set_signal_priority_invalid_signal_id_error,
+        set_signal_priority,
+        1
+    );
+    test_invalid_id_error!(
+        test_try_set_signal_priority_invalid_signal_id_error,
+        try_set_signal_priority,
+        1
+    );
+    test_invalid_id_error!(
+        test_set_signal_once_invalid_signal_id_error,
+        set_signal_once,
+        true
+    );
+    test_invalid_id_error!(
+        test_try_set_signal_once_invalid_signal_id_error,
+        try_set_signal_once,
+        true
+    );
+    test_invalid_id_error!(
+        test_set_signal_mute_invalid_signal_id_error,
+        set_signal_mute,
+        true
+    );
+    test_invalid_id_error!(
+        test_try_set_signal_mute_invalid_signal_id_error,
+        try_set_signal_mute,
+        true
+    );
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     #[test]
     fn test_set_and_spawn() {
         let signaled = Signaled::new(0);
         let calls = Arc::new(Mutex::new(0));
-        
-        let calls_clone = Arc::clone(&calls);
-        signaled.add_signal(signal_sync!(move |_, _| {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            let mut lock = calls_clone.lock().unwrap();
-            *lock = *lock + 1;
-        }, |_, _| true, 3, true)).unwrap();
 
         let calls_clone = Arc::clone(&calls);
-        signaled.add_signal(signal_sync!(move |_, _| {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            let lock = calls_clone.lock().unwrap();
-            assert_eq!(*lock, 1)
-        }, |_, _| true, 2, true)).unwrap();
+        signaled
+            .add_signal(signal_sync!(
+                move |_, _| {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    let mut lock = calls_clone.lock().unwrap();
+                    *lock = *lock + 1;
+                },
+                |_, _| true,
+                3,
+                true
+            ))
+            .unwrap();
 
         let calls_clone = Arc::clone(&calls);
-        signaled.add_signal(signal_sync!(move |_, _| {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            let mut lock = calls_clone.lock().unwrap();
-            *lock = *lock + 2;
-        }, |_, _| true, 1, true)).unwrap();
+        signaled
+            .add_signal(signal_sync!(
+                move |_, _| {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    let lock = calls_clone.lock().unwrap();
+                    assert_eq!(*lock, 1)
+                },
+                |_, _| true,
+                2,
+                true
+            ))
+            .unwrap();
+
+        let calls_clone = Arc::clone(&calls);
+        signaled
+            .add_signal(signal_sync!(
+                move |_, _| {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    let mut lock = calls_clone.lock().unwrap();
+                    *lock = *lock + 2;
+                },
+                |_, _| true,
+                1,
+                true
+            ))
+            .unwrap();
 
         assert_eq!(signaled.signals.lock().unwrap().len(), 3);
         let handle = signaled.set_and_spawn(1).unwrap();
@@ -2757,27 +3086,48 @@ mod tests {
     fn test_try_set_and_spawn() {
         let signaled = Signaled::new(0);
         let calls = Arc::new(Mutex::new(0));
-        
-        let calls_clone = Arc::clone(&calls);
-        signaled.add_signal(signal_sync!(move |_, _| {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            let mut lock = calls_clone.lock().unwrap();
-            *lock = *lock + 1;
-        }, |_, _| true, 3, true)).unwrap();
 
         let calls_clone = Arc::clone(&calls);
-        signaled.add_signal(signal_sync!(move |_, _| {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            let lock = calls_clone.lock().unwrap();
-            assert_eq!(*lock, 1)
-        }, |_, _| true, 2, true)).unwrap();
+        signaled
+            .add_signal(signal_sync!(
+                move |_, _| {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    let mut lock = calls_clone.lock().unwrap();
+                    *lock = *lock + 1;
+                },
+                |_, _| true,
+                3,
+                true
+            ))
+            .unwrap();
 
         let calls_clone = Arc::clone(&calls);
-        signaled.add_signal(signal_sync!(move |_, _| {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            let mut lock = calls_clone.lock().unwrap();
-            *lock = *lock + 2;
-        }, |_, _| true, 1, true)).unwrap();
+        signaled
+            .add_signal(signal_sync!(
+                move |_, _| {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    let lock = calls_clone.lock().unwrap();
+                    assert_eq!(*lock, 1)
+                },
+                |_, _| true,
+                2,
+                true
+            ))
+            .unwrap();
+
+        let calls_clone = Arc::clone(&calls);
+        signaled
+            .add_signal(signal_sync!(
+                move |_, _| {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    let mut lock = calls_clone.lock().unwrap();
+                    *lock = *lock + 2;
+                },
+                |_, _| true,
+                1,
+                true
+            ))
+            .unwrap();
 
         assert_eq!(signaled.signals.lock().unwrap().len(), 3);
         let handle = signaled.try_set_and_spawn(1).unwrap();
@@ -2793,10 +3143,12 @@ mod tests {
         let signaled = Signaled::new(0);
 
         let calls_clone = Arc::clone(&calls);
-        signaled.add_signal(signal_sync!(move |_, _| {
-            let mut lock = calls_clone.lock().unwrap();
-            *lock = *lock + 1;
-        })).unwrap();
+        signaled
+            .add_signal(signal_sync!(move |_, _| {
+                let mut lock = calls_clone.lock().unwrap();
+                *lock = *lock + 1;
+            }))
+            .unwrap();
 
         signaled.set(1).unwrap();
         assert_eq!(signaled.get().unwrap(), 1);
@@ -2813,10 +3165,12 @@ mod tests {
         let signaled = Signaled::new(0);
 
         let calls_clone = Arc::clone(&calls);
-        signaled.add_signal(signal_sync!(move |_, _| {
-            let mut lock = calls_clone.lock().unwrap();
-            *lock = *lock + 1;
-        })).unwrap();
+        signaled
+            .add_signal(signal_sync!(move |_, _| {
+                let mut lock = calls_clone.lock().unwrap();
+                *lock = *lock + 1;
+            }))
+            .unwrap();
 
         signaled.try_set(1).unwrap();
         assert_eq!(signaled.try_get().unwrap(), 1);
@@ -2832,26 +3186,26 @@ mod tests {
         let calls = Arc::new(Mutex::new(0));
         let calls_clone = Arc::clone(&calls);
         let signal_a: Signal<i32> = Signal::new(
-            move |_, _| { 
+            move |_, _| {
                 let mut lock = calls_clone.lock().unwrap();
-                *lock = *lock + 1;    
+                *lock = *lock + 1;
             },
-            |_, new| { *new > 10 },
+            |_, new| *new > 10,
             100,
             false,
-            false
+            false,
         );
 
         let calls_clone = Arc::clone(&calls);
         let signal_b: Signal<i32> = Signal::new(
             move |_, _| {
                 let mut lock = calls_clone.lock().unwrap();
-                *lock = *lock + 2;    
+                *lock = *lock + 2;
             },
-            |old, _| { *old > 10 },
+            |old, _| *old > 10,
             10,
             false,
-            false
+            false,
         );
 
         signal_a.emit(&0, &9).unwrap(); // `new` < 10, Calls = 0
@@ -2884,7 +3238,9 @@ mod tests {
         let signal_d_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
         assert_eq!(signaled.signals.lock().unwrap().len(), 4);
 
-        signaled.combine_signals(&[signal_a_id, signal_b_id, signal_c_id, signal_d_id]).unwrap();
+        signaled
+            .combine_signals(&[signal_a_id, signal_b_id, signal_c_id, signal_d_id])
+            .unwrap();
         assert_eq!(signaled.signals.lock().unwrap().len(), 1);
     }
 
@@ -2902,26 +3258,50 @@ mod tests {
             let signal_a = Arc::try_unwrap(signal_a).unwrap();
             let err = $error;
             assert!(Signal::$combine(&[signal_a, signal_b]).is_err_and(|e| e == err));
-        }
+        };
     }
 
     #[test]
     fn test_combine_poisoned_lock_error() {
         {
-            combine_poisoned_lock!(combine, callback, SignaledError::PoisonedLock { source: ErrorSource::SignalCallback });
+            combine_poisoned_lock!(
+                combine,
+                callback,
+                SignaledError::PoisonedLock {
+                    source: ErrorSource::SignalCallback
+                }
+            );
         }
         {
-            combine_poisoned_lock!(combine, trigger, SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
+            combine_poisoned_lock!(
+                combine,
+                trigger,
+                SignaledError::PoisonedLock {
+                    source: ErrorSource::SignalTrigger
+                }
+            );
         }
     }
 
     #[test]
     fn test_try_combine_poisoned_lock_error() {
         {
-            combine_poisoned_lock!(try_combine, callback, SignaledError::PoisonedLock { source: ErrorSource::SignalCallback });
+            combine_poisoned_lock!(
+                try_combine,
+                callback,
+                SignaledError::PoisonedLock {
+                    source: ErrorSource::SignalCallback
+                }
+            );
         }
         {
-            combine_poisoned_lock!(try_combine, trigger, SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
+            combine_poisoned_lock!(
+                try_combine,
+                trigger,
+                SignaledError::PoisonedLock {
+                    source: ErrorSource::SignalTrigger
+                }
+            );
         }
     }
 
@@ -2932,14 +3312,20 @@ mod tests {
             let signal_b: Signal<i32> = signal_sync!(|_, _| {});
             let signals_to_combine = vec![signal_a, signal_b];
             let _borrow = signals_to_combine[0].callback.write().unwrap();
-            assert!(Signal::try_combine(&signals_to_combine).is_err_and(|e| e == SignaledError::WouldBlock { source: ErrorSource::SignalCallback }));
+            assert!(Signal::try_combine(&signals_to_combine).is_err_and(|e| e
+                == SignaledError::WouldBlock {
+                    source: ErrorSource::SignalCallback
+                }));
         }
         {
             let signal_a: Signal<i32> = signal_sync!(|_, _| {});
             let signal_b: Signal<i32> = signal_sync!(|_, _| {});
             let signals_to_combine = vec![signal_a, signal_b];
             let _borrow = signals_to_combine[0].trigger.write().unwrap();
-            assert!(Signal::try_combine(&signals_to_combine).is_err_and(|e| e == SignaledError::WouldBlock { source: ErrorSource::SignalTrigger }));
+            assert!(Signal::try_combine(&signals_to_combine).is_err_and(|e| e
+                == SignaledError::WouldBlock {
+                    source: ErrorSource::SignalTrigger
+                }));
         }
     }
 
@@ -2949,9 +3335,15 @@ mod tests {
         let signal_a_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
         let signal_b_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
 
-        assert!(signaled.combine_signals(&[signal_a_id, signal_b_id + 1]).is_err_and(|e| {
-            e == SignaledError::InvalidSignalId { id: signal_b_id + 1 }
-        }))
+        assert!(
+            signaled
+                .combine_signals(&[signal_a_id, signal_b_id + 1])
+                .is_err_and(|e| {
+                    e == SignaledError::InvalidSignalId {
+                        id: signal_b_id + 1,
+                    }
+                })
+        )
     }
 
     #[test]
@@ -2960,15 +3352,29 @@ mod tests {
         let signal_a_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
         let signal_b_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
 
-        assert!(signaled.combine_signals(&[signal_a_id, signal_b_id + 1]).is_err_and(|e| {
-            e == SignaledError::InvalidSignalId { id: signal_b_id + 1 }
-        }))
+        assert!(
+            signaled
+                .combine_signals(&[signal_a_id, signal_b_id + 1])
+                .is_err_and(|e| {
+                    e == SignaledError::InvalidSignalId {
+                        id: signal_b_id + 1,
+                    }
+                })
+        )
     }
 
     #[test]
     fn test_once_retain() {
         let signaled = Signaled::new(1);
-        signaled.add_signal(signal_sync!(|_, _| {}, |old, new| *new > *old, 1, true, false)).unwrap();
+        signaled
+            .add_signal(signal_sync!(
+                |_, _| {},
+                |old, new| *new > *old,
+                1,
+                true,
+                false
+            ))
+            .unwrap();
         assert_eq!(signaled.signals.lock().unwrap().len(), 1);
 
         signaled.set(1).unwrap();
@@ -2987,10 +3393,12 @@ mod tests {
                 signaled.$set_duration(Duration::from_millis(500)).unwrap();
 
                 let calls_clone = Arc::clone(&calls);
-                signaled.add_signal(signal_sync!(move |_, _| {
-                    let mut lock = calls_clone.lock().unwrap();
-                    *lock = *lock + 1;
-                })).unwrap();
+                signaled
+                    .add_signal(signal_sync!(move |_, _| {
+                        let mut lock = calls_clone.lock().unwrap();
+                        *lock = *lock + 1;
+                    }))
+                    .unwrap();
 
                 signaled.$set(()).unwrap();
                 assert_eq!(*calls.lock().unwrap(), 1);
@@ -3007,7 +3415,11 @@ mod tests {
     }
 
     test_set_throttled!(test_set_throttled, set_throttled, set_throttle_duration);
-    test_set_throttled!(test_try_set_throttled, try_set_throttled, try_set_throttle_duration);
+    test_set_throttled!(
+        test_try_set_throttled,
+        try_set_throttled,
+        try_set_throttle_duration
+    );
 
     macro_rules! test_set_throttled_and_spawn {
         ($test_name:ident, $set:ident, $set_duration:ident) => {
@@ -3018,10 +3430,12 @@ mod tests {
                 signaled.$set_duration(Duration::from_millis(500)).unwrap();
 
                 let calls_clone = Arc::clone(&calls);
-                signaled.add_signal(signal_sync!(move |_, _| {
-                    let mut lock = calls_clone.lock().unwrap();
-                    *lock = *lock + 1;
-                })).unwrap();
+                signaled
+                    .add_signal(signal_sync!(move |_, _| {
+                        let mut lock = calls_clone.lock().unwrap();
+                        *lock = *lock + 1;
+                    }))
+                    .unwrap();
 
                 signaled.$set(()).unwrap().join().unwrap().unwrap();
                 assert_eq!(*calls.lock().unwrap(), 1);
@@ -3037,6 +3451,14 @@ mod tests {
         };
     }
 
-    test_set_throttled_and_spawn!(test_set_throttled_and_spawn, set_throttled_and_spawn, set_throttle_duration);
-    test_set_throttled_and_spawn!(test_try_set_throttled_and_spawn, try_set_throttled_and_spawn, try_set_throttle_duration);
+    test_set_throttled_and_spawn!(
+        test_set_throttled_and_spawn,
+        set_throttled_and_spawn,
+        set_throttle_duration
+    );
+    test_set_throttled_and_spawn!(
+        test_try_set_throttled_and_spawn,
+        try_set_throttled_and_spawn,
+        try_set_throttle_duration
+    );
 }
