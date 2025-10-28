@@ -532,8 +532,28 @@ impl<T> Signaled<T> {
             return Ok(())
         }
 
-        self.throttle_instant.set(Instant::now() + self.throttle_duration.get());
         self.set(new_value)?;
+        self.throttle_instant.set(Instant::now() + self.throttle_duration.get());
+        Ok(())
+    }
+
+    /// Sets a new value for `val` without emitting `signals`, but only if enough time
+    /// has passed since the previous throttled update.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_value` - The new value of the [`Signaled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError::BorrowMutError`] if `val` is already borrowed.
+    pub fn set_silent_throttled(&self, new_value: T) -> Result<(), SignaledError> {
+        if Instant::now() < self.throttle_instant.get() {
+            return Ok(())
+        }
+
+        self.set_silent(new_value)?;
+        self.throttle_instant.set(Instant::now() + self.throttle_duration.get());
         Ok(())
     }
 

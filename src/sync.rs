@@ -816,6 +816,69 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         Ok(())
     }
 
+    /// Sets a new value for `val` without emitting `signals`, but only if enough time
+    /// has passed since the previous throttled update.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_value` - The new value of the [`Signaled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
+    /// `throttle_instant`, `throttle_duration`, `val`, or `signals` are poisoned.
+    /// 
+    /// # Warnings
+    /// 
+    /// This function may result in a deadlock if used incorrectly.
+    /// 
+    /// For a non-blocking alternative, see [`Signaled::try_set_silent_throttled`].
+    pub fn set_silent_throttled(&self, new_value: T) -> Result<(), SignaledError> {
+        let mut throttle_instant = self.throttle_instant.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant })?;
+        if Instant::now() < *throttle_instant {
+            return Ok(())
+        }
+
+        self.set_silent(new_value)?;
+        *throttle_instant = Instant::now() + *self.throttle_duration.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration })?;
+        Ok(())
+    }
+
+    /// Sets a new value for `val` without emitting `signals`, but only if enough time
+    /// has passed since the previous throttled update.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_value` - The new value of the [`Signaled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
+    /// `throttle_instant`, `throttle_duration` or `val` are poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if any of the underlying locks for
+    /// `throttle_instant`, `throttle_duration` or `val` are held elsewhere.
+    pub fn try_set_silent_throttled(&self, new_value: T) -> Result<(), SignaledError> {
+        let mut throttle_instant = self.throttle_instant.try_lock().map_err(|e| {
+            match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant },
+                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleInstant }
+            }
+        })?;
+        if Instant::now() < *throttle_instant {
+            return Ok(())
+        }
+
+        self.try_set_silent(new_value)?;
+        *throttle_instant = Instant::now() + *self.throttle_duration.try_lock().map_err(|e| {
+            match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration },
+                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleDuration }
+            }
+        })?;
+        Ok(())
+    }
+
     /// Sets the minimum [`Duration`] that must elapse between consecutive calls to
     /// [`Signaled::set_throttled`].
     ///
@@ -916,10 +979,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         if Instant::now() < *throttle_instant {
             return Ok(())
         }
-        *throttle_instant = Instant::now() + *self.throttle_duration.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration })?;
-        drop(throttle_instant);
 
         self.set(new_value)?;
+        *throttle_instant = Instant::now() + *self.throttle_duration.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration })?;
         Ok(())
     }
 
@@ -953,15 +1015,15 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         if Instant::now() < *throttle_instant {
             return Ok(())
         }
+
+        self.try_set(new_value)?;
         *throttle_instant = Instant::now() + *self.throttle_duration.try_lock().map_err(|e| {
             match e {
                 TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration },
                 TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleDuration }
             }
         })?;
-        drop(throttle_instant);
 
-        self.try_set(new_value)?;
         Ok(())
     }
 
@@ -1933,8 +1995,6 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
         if Instant::now() < *throttle_instant {
             return Ok(thread::spawn(|| Ok(())))
         }
-        *throttle_instant = Instant::now() + *self.throttle_duration.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration })?;
-        drop(throttle_instant);
 
         let mut guard = self.val
             .write()
@@ -1963,6 +2023,7 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
             });
             Ok(())
         });
+        *throttle_instant = Instant::now() + *self.throttle_duration.lock().map_err(|_| SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration })?;
         Ok(handle)
     }
 
@@ -1999,13 +2060,6 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
         if Instant::now() < *throttle_instant {
             return Ok(thread::spawn(|| Ok(())))
         }
-        *throttle_instant = Instant::now() + *self.throttle_duration.try_lock().map_err(|e| {
-            match e {
-                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration },
-                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleDuration }
-            }
-        })?;
-        drop(throttle_instant);
 
         let mut guard = self.val
             .try_write()
@@ -2044,6 +2098,13 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
             });
             Ok(())
         });
+
+        *throttle_instant = Instant::now() + *self.throttle_duration.try_lock().map_err(|e| {
+            match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration },
+                TryLockError::WouldBlock => SignaledError::WouldBlock { source: ErrorSource::ThrottleDuration }
+            }
+        })?;
         Ok(handle)
     }
 
