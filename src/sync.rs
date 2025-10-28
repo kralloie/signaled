@@ -1,3 +1,4 @@
+use crate::SignalId;
 use std::fmt::{Debug, Display};
 use std::sync::{
     Arc, Mutex,
@@ -36,8 +37,6 @@ pub enum SignaledError {
     InvalidSignalId { id: SignalId },
 }
 
-pub type SignalId = u64;
-
 static SIGNAL_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Generates a new [`SignalId`] for a [`Signal`] using the global identifier counter.
@@ -50,6 +49,12 @@ pub fn new_signal_id() -> SignalId {
     debug_assert!(id != u64::MAX, "SignalId counter overflow");
     id
 }
+
+pub type CallbackSync<T> = dyn Fn(&T, &T) + Send + Sync + 'static;
+pub type SignalCallbackSync<T> = Arc<RwLock<Arc<CallbackSync<T>>>>;
+pub type TriggerSync<T> = dyn Fn(&T, &T) -> bool + Send + Sync + 'static;
+pub type SignalTriggerSync<T> = Arc<RwLock<Arc<TriggerSync<T>>>>;
+
 /// A signal that executes a callback when a [`Signaled`] value changes, if its trigger condition is met.
 ///
 /// Signals have a unique `id`, a priority for ordering execution, and a trigger function to
@@ -67,9 +72,9 @@ pub fn new_signal_id() -> SignalId {
 /// ```
 pub struct Signal<T: Send + Sync + 'static> {
     /// Function to run when the [`Signal`] is emitted and the trigger condition is met.
-    callback: Arc<RwLock<Arc<dyn Fn(&T, &T) + Send + Sync + 'static>>>,
+    callback: SignalCallbackSync<T>,
     /// Function that decides if the callback will be invoked or not when the [`Signal`] is emitted.
-    trigger: Arc<RwLock<Arc<dyn Fn(&T, &T) -> bool + Send + Sync + 'static>>>,
+    trigger: SignalTriggerSync<T>,
     /// Identifier for the [`Signal`].
     id: u64,
     /// Number used in the [`Signaled`] struct to decide the order of execution of the signals.
@@ -453,7 +458,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     ///
     /// For a non-blocking alternative, see [`Signal::try_combine`].
     pub fn combine(signals: &[Signal<T>]) -> Result<Self, SignaledError> {
-        let callbacks: Vec<Arc<dyn Fn(&T, &T) + Send + Sync + 'static>> = signals
+        let callbacks: Vec<Arc<CallbackSync<T>>> = signals
             .iter()
             .map(|signal| {
                 signal.callback.read().map(|cb| cb.clone()).map_err(|_| {
@@ -464,7 +469,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
             })
             .collect::<Result<_, _>>()?;
 
-        let triggers: Vec<Arc<dyn Fn(&T, &T) -> bool + Send + Sync + 'static>> = signals
+        let triggers: Vec<Arc<TriggerSync<T>>> = signals
             .iter()
             .map(|signal| {
                 signal.trigger.read().map(|tr| tr.clone()).map_err(|_| {
@@ -548,7 +553,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     /// assert_eq!(*calls.lock().unwrap(), 3); // `signal_a` increases calls by 1 and `signal_b` increases calls by 2 so the `combined` signal increases calls by 3
     /// ```
     pub fn try_combine(signals: &[Signal<T>]) -> Result<Self, SignaledError> {
-        let callbacks: Vec<Arc<dyn Fn(&T, &T) + Send + Sync + 'static>> = signals
+        let callbacks: Vec<Arc<CallbackSync<T>>> = signals
             .iter()
             .map(|signal| {
                 signal
@@ -566,7 +571,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
             })
             .collect::<Result<_, _>>()?;
 
-        let triggers: Vec<Arc<dyn Fn(&T, &T) -> bool + Send + Sync + 'static>> = signals
+        let triggers: Vec<Arc<TriggerSync<T>>> = signals
             .iter()
             .map(|signal| {
                 signal
@@ -1332,7 +1337,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 let index = s
                     .iter()
                     .position(|s| s.id == id)
-                    .ok_or_else(|| SignaledError::InvalidSignalId { id: id })?;
+                    .ok_or(SignaledError::InvalidSignalId { id })?;
                 Ok(s.remove(index))
             }
             Err(_) => Err(SignaledError::PoisonedLock {
@@ -1362,7 +1367,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 let index = s
                     .iter()
                     .position(|s| s.id == id)
-                    .ok_or_else(|| SignaledError::InvalidSignalId { id: id })?;
+                    .ok_or(SignaledError::InvalidSignalId { id })?;
                 Ok(s.remove(index))
             }
             Err(TryLockError::Poisoned(_)) => Err(SignaledError::PoisonedLock {
@@ -1404,9 +1409,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 source: ErrorSource::Signals,
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.set_callback(callback);
+            signal.set_callback(callback)
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -1440,9 +1445,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             },
         })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.try_set_callback(callback);
+            signal.try_set_callback(callback)
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -1476,9 +1481,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 source: ErrorSource::Signals,
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.set_trigger(trigger);
+            signal.set_trigger(trigger)
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -1512,9 +1517,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             },
         })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.try_set_trigger(trigger);
+            signal.try_set_trigger(trigger)
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -1543,9 +1548,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
                 source: ErrorSource::Signals,
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.remove_trigger();
+            signal.remove_trigger()
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -1574,9 +1579,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             },
         })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.try_remove_trigger();
+            signal.try_remove_trigger()
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -1607,9 +1612,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_priority(priority);
-            return Ok(());
+            Ok(())
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -1644,9 +1649,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_priority(priority);
-            return Ok(());
+            Ok(())
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -1677,9 +1682,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_once(is_once);
-            return Ok(());
+            Ok(())
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -1710,9 +1715,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_once(is_once);
-            return Ok(());
+            Ok(())
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -1743,9 +1748,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_mute(is_mute);
-            return Ok(());
+            Ok(())
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -1776,9 +1781,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_mute(is_mute);
-            return Ok(());
+            Ok(())
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -1846,7 +1851,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
         for &id in signal_ids {
             if !signals.iter().any(|s| s.id == id) {
-                return Err(SignaledError::InvalidSignalId { id: id });
+                return Err(SignaledError::InvalidSignalId { id });
             }
         }
 
@@ -1854,7 +1859,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             let index = signals
                 .iter()
                 .position(|s| s.id == id)
-                .ok_or_else(|| SignaledError::InvalidSignalId { id: id })?;
+                .ok_or(SignaledError::InvalidSignalId { id })?;
             let signal = signals.remove(index);
             target_signals.push(signal);
         }
@@ -1929,7 +1934,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
 
         for &id in signal_ids {
             if !signals.iter().any(|s| s.id == id) {
-                return Err(SignaledError::InvalidSignalId { id: id });
+                return Err(SignaledError::InvalidSignalId { id });
             }
         }
 
@@ -1937,7 +1942,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
             let index = signals
                 .iter()
                 .position(|s| s.id == id)
-                .ok_or_else(|| SignaledError::InvalidSignalId { id: id })?;
+                .ok_or(SignaledError::InvalidSignalId { id })?;
             let signal = signals.remove(index);
             target_signals.push(signal);
         }

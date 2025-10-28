@@ -45,6 +45,12 @@ pub fn new_signal_id() -> SignalId {
     debug_assert!(id != u64::MAX, "SignalId counter overflow");
     id
 }
+
+pub type Callback<T> = dyn Fn(&T, &T) + 'static;
+pub type SignalCallback<T> = RefCell<Rc<Callback<T>>>;
+pub type Trigger<T> = dyn Fn(&T, &T) -> bool + 'static;
+pub type SignalTrigger<T> = RefCell<Rc<Trigger<T>>>;
+
 /// A signal that executes a callback when a [`Signaled`] value changes, if its trigger condition is met.
 ///
 /// Signals have a unique `id`, a priority for ordering execution, and a trigger function to
@@ -62,9 +68,9 @@ pub fn new_signal_id() -> SignalId {
 /// ```
 pub struct Signal<T: 'static> {
     /// Function to run when the [`Signal`] is emitted and the trigger condition is met.
-    callback: RefCell<Rc<dyn Fn(&T, &T) + 'static>>,
+    callback: SignalCallback<T>,
     /// Function that decides if the callback will be invoked or not when the [`Signal`] is emitted.
-    trigger: RefCell<Rc<dyn Fn(&T, &T) -> bool + 'static>>,
+    trigger: SignalTrigger<T>,
     /// Identifier for the [`Signal`].
     id: u64,
     /// Number used in the [`Signaled`] struct to decide the order of execution of the signals.
@@ -277,7 +283,7 @@ impl<T> Signal<T> {
     /// assert_eq!(calls.get(), 3); // `signal_a` increases calls by 1 and `signal_b` increases calls by 2 so the `combined` signal increases calls by 3
     /// ```
     pub fn combine(signals: &[Signal<T>]) -> Result<Self, SignaledError> {
-        let callbacks: Vec<Rc<dyn Fn(&T, &T) + 'static>> = signals
+        let callbacks: Vec<Rc<Callback<T>>> = signals
             .iter()
             .map(|signal| {
                 signal
@@ -290,7 +296,7 @@ impl<T> Signal<T> {
             })
             .collect::<Result<_, _>>()?;
 
-        let triggers: Vec<Rc<dyn Fn(&T, &T) -> bool + 'static>> = signals
+        let triggers: Vec<Rc<Trigger<T>>> = signals
             .iter()
             .map(|signal| {
                 signal
@@ -693,7 +699,7 @@ impl<T> Signaled<T> {
                 let index = s
                     .iter()
                     .position(|s| s.id == id)
-                    .ok_or_else(|| SignaledError::InvalidSignalId { id: id })?;
+                    .ok_or(SignaledError::InvalidSignalId { id })?;
                 Ok(s.remove(index))
             }
             Err(_) => Err(SignaledError::BorrowMutError {
@@ -728,9 +734,9 @@ impl<T> Signaled<T> {
                 source: ErrorSource::Signals,
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.set_callback(callback);
+            signal.set_callback(callback)
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -760,9 +766,9 @@ impl<T> Signaled<T> {
                 source: ErrorSource::Signals,
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.set_trigger(trigger);
+            signal.set_trigger(trigger)
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -787,9 +793,9 @@ impl<T> Signaled<T> {
                 source: ErrorSource::Signals,
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
-            return signal.remove_trigger();
+            signal.remove_trigger()
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -814,9 +820,9 @@ impl<T> Signaled<T> {
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_priority(priority);
-            return Ok(());
+            Ok(())
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -841,9 +847,9 @@ impl<T> Signaled<T> {
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_once(is_once);
-            return Ok(());
+            Ok(())
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -868,9 +874,9 @@ impl<T> Signaled<T> {
             })?;
         if let Some(signal) = signals.iter().find(|s| s.id == id) {
             signal.set_mute(is_mute);
-            return Ok(());
+            Ok(())
         } else {
-            return Err(SignaledError::InvalidSignalId { id: id });
+            Err(SignaledError::InvalidSignalId { id })
         }
     }
 
@@ -929,7 +935,7 @@ impl<T> Signaled<T> {
 
         for &id in signal_ids {
             if !signals.iter().any(|s| s.id == id) {
-                return Err(SignaledError::InvalidSignalId { id: id });
+                return Err(SignaledError::InvalidSignalId { id });
             }
         }
 
@@ -937,7 +943,7 @@ impl<T> Signaled<T> {
             let index = signals
                 .iter()
                 .position(|s| s.id == id)
-                .ok_or_else(|| SignaledError::InvalidSignalId { id: id })?;
+                .ok_or(SignaledError::InvalidSignalId { id })?;
             let signal = signals.remove(index);
             target_signals.push(signal);
         }
