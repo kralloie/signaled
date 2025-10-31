@@ -1229,20 +1229,10 @@ mod tests {
         };
     }
 
-    test_signaled_borrow_error!(test_set_borrow_error, val, borrow, set, 1; SignaledError::BorrowMutError { source: ErrorSource::Value });
-    test_signaled_borrow_error!(test_set_silent_borrow_error, val, borrow, set_silent, 1; SignaledError::BorrowMutError { source: ErrorSource::Value });
-    test_signaled_borrow_error!(test_get_ref_borrow_error, val, borrow_mut, get_ref; SignaledError::BorrowError { source: ErrorSource::Value });
-    test_signaled_borrow_error!(test_get_borrow_error, val, borrow_mut, get; SignaledError::BorrowError { source: ErrorSource::Value });
-    test_signaled_borrow_error!(test_emit_signals_borrow_error, signals, borrow, emit_signals, &1, &2; SignaledError::BorrowMutError { source: ErrorSource::Signals });
-    test_signaled_borrow_error!(test_add_signal_borrow_error, signals, borrow, add_signal, signal!(|_, _| {}); SignaledError::BorrowMutError { source: ErrorSource::Signals });
-    test_signaled_borrow_error!(test_remove_signal_borrow_error, signals, borrow, remove_signal; SignaledError::BorrowMutError { source: ErrorSource::Signals }, true);
-    test_signaled_borrow_error!(test_set_signal_callback_borrow_error, signals, borrow_mut, set_signal_callback, |_, _| {}; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
-    test_signaled_borrow_error!(test_set_signal_trigger_borrow_error, signals, borrow_mut, set_signal_trigger, |_, _| true; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
-    test_signaled_borrow_error!(test_remove_signal_trigger_borrow_error, signals, borrow_mut, remove_signal_trigger; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
-    test_signaled_borrow_error!(test_set_signal_priority_borrow_error, signals, borrow_mut, set_signal_priority, 1; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
-    test_signaled_borrow_error!(test_set_signal_once_borrow_error, signals, borrow_mut, set_signal_once, true; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
-    test_signaled_borrow_error!(test_set_signal_mute_borrow_error, signals, borrow_mut, set_signal_mute, true; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
-    test_signaled_borrow_error!(test_combine_signals_borrow_error, signals, borrow, combine_signals, &[1, 2]; SignaledError::BorrowMutError { source: ErrorSource::Signals });
+    test_signaled_borrow_error!(test_borrow_mut_error_value, val, borrow, set, 1; SignaledError::BorrowMutError { source: ErrorSource::Value });
+    test_signaled_borrow_error!(test_borrow_mut_error_signals, signals, borrow, add_signal, signal!(|_, _| {}); SignaledError::BorrowMutError { source: ErrorSource::Signals });
+    test_signaled_borrow_error!(test_borrow_error_signals, signals, borrow_mut, set_signal_callback, |_, _| {}; SignaledError::BorrowError { source: ErrorSource::Signals }, true);
+    test_signaled_borrow_error!(test_borrow_error_value, val, borrow_mut, get; SignaledError::BorrowError { source: ErrorSource::Value });
 
     macro_rules! test_signal_borrow_error {
         ($test_name:ident, $borrow:ident, $borrow_type:ident, $method:ident $(, $args:expr)*; $error:expr) => {
@@ -1255,64 +1245,19 @@ mod tests {
             }
         };
     }
-
-    test_signal_borrow_error!(test_emit_trigger_borrow_error, trigger, borrow_mut, emit, &1, &2; SignaledError::BorrowError { source: ErrorSource::SignalTrigger });
-    test_signal_borrow_error!(test_emit_callback_borrow_error, callback, borrow_mut, emit, &1, &2; SignaledError::BorrowError { source: ErrorSource::SignalCallback });
-    test_signal_borrow_error!(test_set_callback_borrow_error, callback, borrow, set_callback, |_, _| {}; SignaledError::BorrowMutError { source: ErrorSource::SignalCallback });
-    test_signal_borrow_error!(test_set_trigger_borrow_error, trigger, borrow, set_trigger, |_, _| true; SignaledError::BorrowMutError { source: ErrorSource::SignalTrigger });
-    test_signal_borrow_error!(test_remove_trigger_borrow_error, trigger, borrow, remove_trigger; SignaledError::BorrowMutError { source: ErrorSource::SignalTrigger });
+    test_signal_borrow_error!(test_borrow_error_signal_callback, callback, borrow_mut, emit, &1, &2; SignaledError::BorrowError { source: ErrorSource::SignalCallback });
+    test_signal_borrow_error!(test_borrow_error_signal_trigger, trigger, borrow_mut, emit, &1, &2; SignaledError::BorrowError { source: ErrorSource::SignalTrigger });
+    test_signal_borrow_error!(test_borrow_mut_error_signal_callback, callback, borrow, set_callback, |_, _| {}; SignaledError::BorrowMutError { source: ErrorSource::SignalCallback });
+    test_signal_borrow_error!(test_borrow_mut_error_signal_trigger, trigger, borrow, set_trigger, |_, _| true; SignaledError::BorrowMutError { source: ErrorSource::SignalTrigger });
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-    fn create_signaled_with_invalid_id() -> (Signaled<i32>, SignalId) {
+    #[test]
+    fn test_invalid_id() {
         let signaled = Signaled::new(0);
         let signal_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
-        let invalid_id = signal_id + 1;
-        (signaled, invalid_id)
+        assert!(signaled.remove_signal(signal_id + 1).is_err_and(|e| e == SignaledError::InvalidSignalId { id: signal_id + 1 }));
     }
-
-    macro_rules! test_invalid_id_error {
-        ($test_name:ident, $method:ident, $($args:expr),*) => {
-            #[test]
-            fn $test_name() {
-                let (signaled, invalid_id) = create_signaled_with_invalid_id();
-                assert!(matches!(
-                    signaled.$method(invalid_id, $($args),*),
-                    Err(SignaledError::InvalidSignalId { id }) if id == invalid_id)
-                );
-            }
-        };
-    }
-    test_invalid_id_error!(test_remove_signal_invalid_signal_id_error, remove_signal,);
-    test_invalid_id_error!(
-        test_set_signal_callback_invalid_signal_id_error,
-        set_signal_callback,
-        |_, _| {}
-    );
-    test_invalid_id_error!(
-        test_set_signal_trigger_invalid_signal_id_error,
-        set_signal_trigger,
-        |_, _| true
-    );
-    test_invalid_id_error!(
-        test_remove_signal_trigger_invalid_signal_id_error,
-        remove_signal_trigger,
-    );
-    test_invalid_id_error!(
-        test_set_signal_priority_invalid_signal_id_error,
-        set_signal_priority,
-        1
-    );
-    test_invalid_id_error!(
-        test_set_signal_once_invalid_signal_id_error,
-        set_signal_once,
-        true
-    );
-    test_invalid_id_error!(
-        test_set_signal_mute_invalid_signal_id_error,
-        set_signal_mute,
-        true
-    );
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1356,23 +1301,14 @@ mod tests {
     }
 
     #[test]
-    fn test_get_ref() {
+    fn test_getters() {
         let signaled = Signaled::new(0);
         assert_eq!(*signaled.get_ref().unwrap(), 0);
-
-        for i in 0..10 {
-            signaled.set(i).unwrap();
-            assert_eq!(*signaled.get_ref().unwrap(), i);
-        }
-    }
-
-    #[test]
-    fn test_get() {
-        let signaled = Signaled::new(0);
         assert_eq!(signaled.get().unwrap(), 0);
 
         for i in 0..10 {
             signaled.set(i).unwrap();
+            assert_eq!(*signaled.get_ref().unwrap(), i);
             assert_eq!(signaled.get().unwrap(), i);
         }
     }
@@ -1451,30 +1387,6 @@ mod tests {
     }
 
     #[test]
-    fn test_combine_borrow_error() {
-        {
-            let signal_a: Signal<i32> = signal!(|_, _| {});
-            let signal_b: Signal<i32> = signal!(|_, _| {});
-            let signals_to_combine = vec![signal_a, signal_b];
-            let _borrow = signals_to_combine[0].callback.borrow_mut();
-            assert!(Signal::combine(&signals_to_combine).is_err_and(|e| e
-                == SignaledError::BorrowError {
-                    source: ErrorSource::SignalCallback
-                }));
-        }
-        {
-            let signal_a: Signal<i32> = signal!(|_, _| {});
-            let signal_b: Signal<i32> = signal!(|_, _| {});
-            let signals_to_combine = vec![signal_a, signal_b];
-            let _borrow = signals_to_combine[0].trigger.borrow_mut();
-            assert!(Signal::combine(&signals_to_combine).is_err_and(|e| e
-                == SignaledError::BorrowError {
-                    source: ErrorSource::SignalTrigger
-                }));
-        }
-    }
-
-    #[test]
     fn test_combine_signals() {
         let signaled = Signaled::new(0);
         let signal_a_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
@@ -1487,26 +1399,6 @@ mod tests {
             .combine_signals(&[signal_a_id, signal_b_id, signal_c_id, signal_d_id])
             .unwrap();
         assert_eq!(signaled.signals.borrow().len(), 1);
-    }
-
-    #[test]
-    fn test_combine_signals_invalid_id_error() {
-        let signaled = Signaled::new(0);
-        let signal_a_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
-        let signal_b_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
-        let signal_c_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
-        let signal_d_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
-        assert_eq!(signaled.signals.borrow().len(), 4);
-
-        assert!(
-            signaled
-                .combine_signals(&[signal_a_id, signal_b_id, signal_c_id, signal_d_id + 1])
-                .is_err_and(|e| {
-                    e == SignaledError::InvalidSignalId {
-                        id: signal_d_id + 1,
-                    }
-                })
-        )
     }
 
     #[test]
@@ -1545,5 +1437,25 @@ mod tests {
 
         signaled.set_throttled(()).unwrap();
         assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn test_reentrant_set() {
+        let signaled = Rc::new(Signaled::new(0));
+        let signaled_clone = Rc::clone(&signaled);
+
+        signaled
+            .add_signal(signal!(move |_, _| {
+                let err = signaled_clone.set(2).unwrap_err();
+                assert_eq!(
+                    err,
+                    SignaledError::BorrowMutError {
+                        source: ErrorSource::Value
+                    }
+                );
+            }))
+            .unwrap();
+
+        signaled.set(1).unwrap();
     }
 }

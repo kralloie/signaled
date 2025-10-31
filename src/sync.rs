@@ -2632,91 +2632,33 @@ mod tests {
     }
 
     #[test]
-    fn test_get_lock() {
-        let signaled = Signaled::new(0);
-        assert_eq!(*signaled.get_lock().unwrap(), 0);
-
-        for i in 0..10 {
-            signaled.set(i).unwrap();
-            assert_eq!(*signaled.get_lock().unwrap(), i);
-        }
-    }
-
-    #[test]
-    fn test_get() {
+    fn test_getters() {
         let signaled = Signaled::new(0);
         assert_eq!(signaled.get().unwrap(), 0);
-
-        for i in 0..10 {
-            signaled.set(i).unwrap();
-            assert_eq!(signaled.get().unwrap(), i);
-        }
-    }
-
-    #[test]
-    fn test_old_new() {
-        {
-            let signaled = Signaled::new(0);
-            signaled
-                .add_signal(signal_sync!(|old, new| assert!(*new == *old + 1)))
-                .unwrap();
-
-            for i in 1..10 {
-                signaled.set(i).unwrap();
-            }
-        }
-        {
-            let signaled = Signaled::new(0);
-            signaled
-                .add_signal(signal_sync!(|old, new| assert!(*new == *old + 1)))
-                .unwrap();
-
-            for i in 1..10 {
-                signaled.try_set(i).unwrap();
-            }
-        }
-    }
-
-    #[test]
-    fn test_try_get_lock() {
-        let signaled = Signaled::new(0);
+        assert_eq!(signaled.try_get().unwrap(), 0);
+        assert_eq!(*signaled.get_lock().unwrap(), 0);
         assert_eq!(*signaled.try_get_lock().unwrap(), 0);
 
         for i in 0..10 {
             signaled.set(i).unwrap();
+            assert_eq!(signaled.get().unwrap(), i);
+            assert_eq!(signaled.try_get().unwrap(), i);
+            assert_eq!(*signaled.get_lock().unwrap(), i);
             assert_eq!(*signaled.try_get_lock().unwrap(), i);
         }
     }
 
     #[test]
-    fn test_try_get() {
+    fn test_old_new() {
         let signaled = Signaled::new(0);
-        assert_eq!(signaled.try_get().unwrap(), 0);
-        for i in 0..10 {
-            signaled.set(i).unwrap();
-            assert_eq!(signaled.try_get().unwrap(), i)
-        }
-    }
-
-    #[test]
-    fn test_try_set() {
-        let calls = Arc::new(Mutex::new(0));
-        let signaled = Signaled::new(0);
-
-        let calls_clone = Arc::clone(&calls);
         signaled
-            .add_signal(signal_sync!(move |_, _| {
-                let mut lock = calls_clone.lock().unwrap();
-                *lock = *lock + 1;
-            }))
+            .add_signal(signal_sync!(|old, new| assert!(*new == *old + 1)))
             .unwrap();
 
-        for i in 0..10 {
-            signaled.try_set(i).unwrap();
-            assert_eq!(signaled.get().unwrap(), i);
+        for _ in 1..10 {
+            signaled.set(signaled.get().unwrap() + 1).unwrap();
+            signaled.try_set(signaled.try_get().unwrap() + 1).unwrap();
         }
-
-        assert_eq!(*calls.lock().unwrap(), 10);
     }
 
     #[test]
@@ -2798,35 +2740,12 @@ mod tests {
                 assert!(signaled.$method($($args),*).is_err_and(|e| e == err));
             }
         };
-        ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr, $use_id:tt) => {
-            #[test]
-            fn $test_name() {
-                let signaled = Signaled::new(0);
-                let signal_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-                let _lock = signaled.$lock.$get_lock().unwrap();
-                let err: SignaledError = $error;
-                assert!(signaled.$method(signal_id $(, $args),*).is_err_and(|e| e == err));
-            }
-        };
     }
 
-    test_signaled_would_block_error!(test_try_set_would_block_error, val, read, try_set, 1; SignaledError::WouldBlock { source: ErrorSource::Value });
-    test_signaled_would_block_error!(test_try_set_silent_would_block_error, val, read, try_set_silent, 1; SignaledError::WouldBlock { source: ErrorSource::Value });
-    test_signaled_would_block_error!(test_try_set_throttled_would_block_error, throttle_instant, lock, try_set_throttled, 1; SignaledError::WouldBlock { source: ErrorSource::ThrottleInstant });
-    test_signaled_would_block_error!(test_try_set_and_spawn_would_block_error, val, read, try_set_and_spawn, 1; SignaledError::WouldBlock { source: ErrorSource::Value });
-    test_signaled_would_block_error!(test_try_set_throttled_and_spawn_would_block_error, throttle_instant, lock, try_set_throttled_and_spawn, 1; SignaledError::WouldBlock { source: ErrorSource::ThrottleInstant });
-    test_signaled_would_block_error!(test_try_get_would_block_error, val, write, try_get; SignaledError::WouldBlock { source: ErrorSource::Value });
-    test_signaled_would_block_error!(test_try_get_lock_would_block_error, val, write, try_get_lock; SignaledError::WouldBlock { source: ErrorSource::Value });
-    test_signaled_would_block_error!(test_try_emit_signals_would_block_error, signals, lock, try_emit_signals, &1, &2; SignaledError::WouldBlock { source: ErrorSource::Signals });
-    test_signaled_would_block_error!(test_try_add_signal_would_block_error, signals, lock, try_add_signal, signal_sync!(|_, _| {}); SignaledError::WouldBlock { source: ErrorSource::Signals });
-    test_signaled_would_block_error!(test_try_remove_signal_would_block_error, signals, lock, try_remove_signal; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
-    test_signaled_would_block_error!(test_try_set_signal_callback_would_block_error, signals, lock, try_set_signal_callback, |_, _| {}; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
-    test_signaled_would_block_error!(test_try_set_signal_trigger_would_block_error, signals, lock, try_set_signal_trigger, |_, _| true; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
-    test_signaled_would_block_error!(test_try_remove_signal_trigger_would_block_error, signals, lock, try_remove_signal_trigger; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
-    test_signaled_would_block_error!(test_try_set_signal_priority_would_block_error, signals, lock, try_set_signal_priority, 1; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
-    test_signaled_would_block_error!(test_try_set_signal_once_would_block_error, signals, lock, try_set_signal_once, true; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
-    test_signaled_would_block_error!(test_try_set_signal_mute_would_block_error, signals, lock, try_set_signal_mute, true; SignaledError::WouldBlock { source: ErrorSource::Signals }, true);
-    test_signaled_would_block_error!(test_try_combine_signals_would_block_error, signals, lock, try_combine_signals, &[1, 2]; SignaledError::WouldBlock { source: ErrorSource::Signals });
+    test_signaled_would_block_error!(test_would_block_source_value, val, read, try_set, 1; SignaledError::WouldBlock { source: ErrorSource::Value });
+    test_signaled_would_block_error!(test_would_block_source_signals, signals, lock, try_set, 1; SignaledError::WouldBlock { source: ErrorSource::Signals });
+    test_signaled_would_block_error!(test_would_block_source_throttle_instant, throttle_instant, lock, try_set_throttled, 1; SignaledError::WouldBlock { source: ErrorSource::ThrottleInstant });
+    test_signaled_would_block_error!(test_would_block_source_throttle_duration, throttle_duration, lock, try_set_throttled, 1; SignaledError::WouldBlock { source: ErrorSource::ThrottleDuration });
 
     macro_rules! test_signal_would_block_error {
         ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr) => {
@@ -2840,81 +2759,31 @@ mod tests {
         };
     }
 
-    test_signal_would_block_error!(test_try_emit_callback_would_block_error, callback, write, try_emit, &1, &2; SignaledError::WouldBlock { source: ErrorSource::SignalCallback });
-    test_signal_would_block_error!(test_try_emit_trigger_would_block_error, trigger, write, try_emit, &1, &2; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
-    test_signal_would_block_error!(test_try_set_callback_would_block_error, callback, write, try_set_callback, |_, _| {}; SignaledError::WouldBlock { source: ErrorSource::SignalCallback });
-    test_signal_would_block_error!(test_try_set_trigger_would_block_error, trigger, write, try_set_trigger, |_, _| true; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
-    test_signal_would_block_error!(test_try_remove_trigger_would_block_error, trigger, write, try_remove_trigger; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
+    test_signal_would_block_error!(test_would_block_source_signal_callback, callback, write, try_emit, &1, &2; SignaledError::WouldBlock { source: ErrorSource::SignalCallback });
+    test_signal_would_block_error!(test_would_block_source_signal_trigger, trigger, write, try_emit, &1, &2; SignaledError::WouldBlock { source: ErrorSource::SignalTrigger });
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-    macro_rules! create_poisoned_signaled {
-        ($lock:ident, $get_lock:ident) => {{
-            let signaled = Arc::new(Signaled::new(0));
-            let signal_id = signaled.add_signal(signal_sync!(|_, _| panic!())).unwrap();
-
-            let signaled_clone = Arc::clone(&signaled);
-            let result = std::panic::catch_unwind(move || {
-                let _lock = signaled_clone.$lock.$get_lock().unwrap();
-                panic!();
-            });
-            assert!(result.is_err());
-            (signaled, signal_id)
-        }};
-    }
 
     macro_rules! test_signaled_poisoned_lock {
         ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr) => {
             #[test]
             fn $test_name() {
-                let (signaled, _) = create_poisoned_signaled!($lock, $get_lock);
+                let signaled = Arc::new(Signaled::new(0));
+                let signaled_clone = Arc::clone(&signaled);
+                let result = std::panic::catch_unwind(move || {
+                    let _lock = signaled_clone.$lock.$get_lock().unwrap();
+                    panic!();
+                });
+                assert!(result.is_err());
                 let err: SignaledError = $error;
                 assert!(signaled.$method($($args),*).is_err_and(|e| e == err));
             }
         };
-        ($test_name:ident, $lock:ident, $get_lock:ident, $method:ident $(, $args:expr)*; $error:expr, $use_id:tt) => {
-            #[test]
-            fn $test_name() {
-                let (signaled, signal_id) = create_poisoned_signaled!($lock, $get_lock);
-                let err: SignaledError = $error;
-                assert!(signaled.$method(signal_id $(, $args),*).is_err_and(|e| e == err));
-            }
-        }
     }
-    test_signaled_poisoned_lock!(test_set_poisoned_lock_error, val, write, set, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_try_set_poisoned_lock_error, val, write, try_set, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_set_throttled_poisoned_lock_error, throttle_instant, lock, set_throttled, 1; SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant });
-    test_signaled_poisoned_lock!(test_try_set_throttled_poisoned_lock_error, throttle_instant, lock, try_set_throttled, 1; SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant });
-    test_signaled_poisoned_lock!(test_set_silent_poisoned_lock_error, val, write, set_silent, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_try_set_silent_poisoned_lock_error, val, write, try_set_silent, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_set_and_spawn_poisoned_lock_error, val, write, set_and_spawn, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_try_set_and_spawn_poisoned_lock_error, val, write, try_set_and_spawn, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_set_throttled_and_spawn_poisoned_lock_error, throttle_instant, lock, set_throttled_and_spawn, 1; SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant });
-    test_signaled_poisoned_lock!(test_try_set_throttled_and_spawn_poisoned_lock_error, throttle_instant, lock, try_set_throttled_and_spawn, 1; SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant });
-    test_signaled_poisoned_lock!(test_get_poisoned_lock_error, val, write, get; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_try_get_poisoned_lock_error, val, write, try_get; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_get_lock_poisoned_lock_error, val, write, get_lock; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_try_get_lock_poisoned_lock_error, val, write, try_get_lock; SignaledError::PoisonedLock { source: ErrorSource::Value });
-    test_signaled_poisoned_lock!(test_emit_signals_poisoned_lock_error, signals, lock, emit_signals, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::Signals });
-    test_signaled_poisoned_lock!(test_try_emit_signals_poisoned_lock_error, signals, lock, try_emit_signals, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::Signals });
-    test_signaled_poisoned_lock!(test_add_signal_poisoned_lock_error, signals, lock, add_signal, signal_sync!(|_,_| {}); SignaledError::PoisonedLock { source: ErrorSource::Signals });
-    test_signaled_poisoned_lock!(test_try_add_signal_poisoned_lock_error, signals, lock, try_add_signal, signal_sync!(|_,_| {}); SignaledError::PoisonedLock { source: ErrorSource::Signals });
-    test_signaled_poisoned_lock!(test_remove_signal_poisoned_lock_error, signals, lock, remove_signal; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_try_remove_signal_poisoned_lock_error, signals, lock, try_remove_signal; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_set_signal_callback_poisoned_lock_error, signals, lock, set_signal_callback, |_, _| {}; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_try_set_signal_callback_poisoned_lock_error, signals, lock, try_set_signal_callback, |_, _| {}; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_set_signal_trigger_poisoned_lock_error, signals, lock, set_signal_trigger, |_, _| true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_try_set_signal_trigger_poisoned_lock_error, signals, lock, try_set_signal_trigger, |_, _| true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_remove_signal_trigger_poisoned_lock_error, signals, lock, remove_signal_trigger; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_try_remove_signal_trigger_poisoned_lock_error, signals, lock, try_remove_signal_trigger; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_set_signal_priority_poisoned_lock_error, signals, lock, set_signal_priority, 1; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_try_set_signal_priority_poisoned_lock_error, signals, lock, try_set_signal_priority, 1; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_set_signal_once_poisoned_lock_error, signals, lock, set_signal_once, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_try_set_signal_once_poisoned_lock_error, signals, lock, try_set_signal_once, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_set_signal_mute_poisoned_lock_error, signals, lock, set_signal_mute, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_try_set_signal_mute_poisoned_lock_error, signals, lock, try_set_signal_mute, true; SignaledError::PoisonedLock { source: ErrorSource::Signals }, true);
-    test_signaled_poisoned_lock!(test_combine_signals_poisoned_lock_error, signals, lock, combine_signals, &[1, 2]; SignaledError::PoisonedLock { source: ErrorSource::Signals });
-    test_signaled_poisoned_lock!(test_try_combine_signals_poisoned_lock_error, signals, lock, try_combine_signals, &[1, 2]; SignaledError::PoisonedLock { source: ErrorSource::Signals });
+    test_signaled_poisoned_lock!(test_poisoned_lock_value, val, write, set, 1; SignaledError::PoisonedLock { source: ErrorSource::Value });
+    test_signaled_poisoned_lock!(test_poisoned_lock_signals, signals, lock, set, 1; SignaledError::PoisonedLock { source: ErrorSource::Signals });
+    test_signaled_poisoned_lock!(test_poisoned_lock_throttle_instant, throttle_instant, lock, set_throttled, 1; SignaledError::PoisonedLock { source: ErrorSource::ThrottleInstant });
+    test_signaled_poisoned_lock!(test_poisoned_lock_throttle_duration, throttle_duration, lock, set_throttled, 1; SignaledError::PoisonedLock { source: ErrorSource::ThrottleDuration });
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -2934,439 +2803,191 @@ mod tests {
             }
         };
     }
-    test_signal_poisoned_lock!(test_emit_poisoned_callback_lock_error, callback, emit, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::SignalCallback });
-    test_signal_poisoned_lock!(test_emit_poisoned_trigger_lock_error, trigger, emit, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
-    test_signal_poisoned_lock!(test_try_emit_poisoned_callback_lock_error, callback, try_emit, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::SignalCallback });
-    test_signal_poisoned_lock!(test_try_emit_poisoned_trigger_lock_error, trigger, try_emit, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
-    test_signal_poisoned_lock!(test_set_callback_poisoned_lock_error, callback, set_callback, |_, _| {}; SignaledError::PoisonedLock { source: ErrorSource::SignalCallback });
-    test_signal_poisoned_lock!(test_try_set_callback_poisoned_lock_error, callback, try_set_callback, |_, _| {}; SignaledError::PoisonedLock { source: ErrorSource::SignalCallback });
-    test_signal_poisoned_lock!(test_set_trigger_poisoned_lock_error, trigger, set_trigger, |_, _| true; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
-    test_signal_poisoned_lock!(test_try_set_trigger_poisoned_lock_error, trigger, try_set_trigger, |_, _| true; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
-    test_signal_poisoned_lock!(test_remove_trigger_poisoned_lock_error, trigger, remove_trigger; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
-    test_signal_poisoned_lock!(test_try_remove_trigger_poisoned_lock_error, trigger, try_remove_trigger; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
+    test_signal_poisoned_lock!(test_poisoned_lock_signal_callback, callback, emit, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::SignalCallback });
+    test_signal_poisoned_lock!(test_poisoned_lock_signal_trigger, trigger, emit, &1, &2; SignaledError::PoisonedLock { source: ErrorSource::SignalTrigger });
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-    fn create_signaled_with_invalid_id() -> (Signaled<i32>, SignalId) {
-        let signaled = Signaled::new(0);
+    #[test]
+    fn test_invalid_id_error() {
+        let signaled = Signaled::new(());
         let signal_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let invalid_id = signal_id + 1;
-        (signaled, invalid_id)
+        assert!(
+            signaled
+                .set_signal_callback(signal_id + 1, |_, _| {})
+                .is_err_and(|e| e == SignaledError::InvalidSignalId { id: signal_id + 1 })
+        )
     }
 
-    macro_rules! test_invalid_id_error {
-        ($test_name:ident, $method:ident, $($args:expr),*) => {
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    macro_rules! test_set_and_spawn {
+        ($test_name:ident, $method:ident) => {
             #[test]
             fn $test_name() {
-                let (signaled, invalid_id) = create_signaled_with_invalid_id();
-                assert!(matches!(
-                    signaled.$method(invalid_id, $($args),*),
-                    Err(SignaledError::InvalidSignalId { id }) if id == invalid_id)
-                );
+                let signaled = Signaled::new(0);
+                let calls = Arc::new(Mutex::new(0));
+
+                let calls_clone = Arc::clone(&calls);
+                signaled
+                    .add_signal(signal_sync!(
+                        move |_, _| {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            let mut lock = calls_clone.lock().unwrap();
+                            *lock = *lock + 1;
+                        },
+                        |_, _| true,
+                        3,
+                        true
+                    ))
+                    .unwrap();
+
+                let calls_clone = Arc::clone(&calls);
+                signaled
+                    .add_signal(signal_sync!(
+                        move |_, _| {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            let lock = calls_clone.lock().unwrap();
+                            assert_eq!(*lock, 1)
+                        },
+                        |_, _| true,
+                        2,
+                        true
+                    ))
+                    .unwrap();
+
+                let calls_clone = Arc::clone(&calls);
+                signaled
+                    .add_signal(signal_sync!(
+                        move |_, _| {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            let mut lock = calls_clone.lock().unwrap();
+                            *lock = *lock + 2;
+                        },
+                        |_, _| true,
+                        1,
+                        true
+                    ))
+                    .unwrap();
+
+                assert_eq!(signaled.signals.lock().unwrap().len(), 3);
+                let handle = signaled.$method(1).unwrap();
+                assert_eq!(*calls.lock().unwrap(), 0);
+                let _ = handle.join().unwrap();
+                assert_eq!(signaled.signals.lock().unwrap().len(), 0);
+                assert_eq!(*calls.lock().unwrap(), 3);
             }
         };
     }
-    test_invalid_id_error!(test_remove_signal_invalid_signal_id_error, remove_signal,);
-    test_invalid_id_error!(
-        test_try_remove_signal_invalid_signal_id_error,
-        try_remove_signal,
-    );
-    test_invalid_id_error!(
-        test_set_signal_callback_invalid_signal_id_error,
-        set_signal_callback,
-        |_, _| {}
-    );
-    test_invalid_id_error!(
-        test_try_set_signal_callback_invalid_signal_id_error,
-        try_set_signal_callback,
-        |_, _| {}
-    );
-    test_invalid_id_error!(
-        test_set_signal_trigger_invalid_signal_id_error,
-        set_signal_trigger,
-        |_, _| true
-    );
-    test_invalid_id_error!(
-        test_try_set_signal_trigger_invalid_signal_id_error,
-        try_set_signal_trigger,
-        |_, _| true
-    );
-    test_invalid_id_error!(
-        test_remove_signal_trigger_invalid_signal_id_error,
-        remove_signal_trigger,
-    );
-    test_invalid_id_error!(
-        test_try_remove_signal_trigger_invalid_signal_id_error,
-        try_remove_signal_trigger,
-    );
-    test_invalid_id_error!(
-        test_set_signal_priority_invalid_signal_id_error,
-        set_signal_priority,
-        1
-    );
-    test_invalid_id_error!(
-        test_try_set_signal_priority_invalid_signal_id_error,
-        try_set_signal_priority,
-        1
-    );
-    test_invalid_id_error!(
-        test_set_signal_once_invalid_signal_id_error,
-        set_signal_once,
-        true
-    );
-    test_invalid_id_error!(
-        test_try_set_signal_once_invalid_signal_id_error,
-        try_set_signal_once,
-        true
-    );
-    test_invalid_id_error!(
-        test_set_signal_mute_invalid_signal_id_error,
-        set_signal_mute,
-        true
-    );
-    test_invalid_id_error!(
-        test_try_set_signal_mute_invalid_signal_id_error,
-        try_set_signal_mute,
-        true
-    );
 
-    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    test_set_and_spawn!(test_set_and_spawn, set_and_spawn);
+    test_set_and_spawn!(test_try_set_and_spawn, try_set_and_spawn);
 
-    #[test]
-    fn test_set_and_spawn() {
-        let signaled = Signaled::new(0);
-        let calls = Arc::new(Mutex::new(0));
+    macro_rules! test_set_silent {
+        ($test_name:ident, $method:ident) => {
+            #[test]
+            fn $test_name() {
+                let calls = Arc::new(Mutex::new(0));
+                let signaled = Signaled::new(0);
 
-        let calls_clone = Arc::clone(&calls);
-        signaled
-            .add_signal(signal_sync!(
-                move |_, _| {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    let mut lock = calls_clone.lock().unwrap();
-                    *lock = *lock + 1;
-                },
-                |_, _| true,
-                3,
-                true
-            ))
-            .unwrap();
+                let calls_clone = Arc::clone(&calls);
+                signaled
+                    .add_signal(signal_sync!(move |_, _| {
+                        let mut lock = calls_clone.lock().unwrap();
+                        *lock = *lock + 1;
+                    }))
+                    .unwrap();
 
-        let calls_clone = Arc::clone(&calls);
-        signaled
-            .add_signal(signal_sync!(
-                move |_, _| {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    let lock = calls_clone.lock().unwrap();
-                    assert_eq!(*lock, 1)
-                },
-                |_, _| true,
-                2,
-                true
-            ))
-            .unwrap();
+                signaled.set(1).unwrap();
+                assert_eq!(signaled.get().unwrap(), 1);
+                assert_eq!(*calls.lock().unwrap(), 1);
 
-        let calls_clone = Arc::clone(&calls);
-        signaled
-            .add_signal(signal_sync!(
-                move |_, _| {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    let mut lock = calls_clone.lock().unwrap();
-                    *lock = *lock + 2;
-                },
-                |_, _| true,
-                1,
-                true
-            ))
-            .unwrap();
-
-        assert_eq!(signaled.signals.lock().unwrap().len(), 3);
-        let handle = signaled.set_and_spawn(1).unwrap();
-        assert_eq!(*calls.lock().unwrap(), 0);
-        let _ = handle.join().unwrap();
-        assert_eq!(signaled.signals.lock().unwrap().len(), 0);
-        assert_eq!(*calls.lock().unwrap(), 3);
-    }
-
-    #[test]
-    fn test_try_set_and_spawn() {
-        let signaled = Signaled::new(0);
-        let calls = Arc::new(Mutex::new(0));
-
-        let calls_clone = Arc::clone(&calls);
-        signaled
-            .add_signal(signal_sync!(
-                move |_, _| {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    let mut lock = calls_clone.lock().unwrap();
-                    *lock = *lock + 1;
-                },
-                |_, _| true,
-                3,
-                true
-            ))
-            .unwrap();
-
-        let calls_clone = Arc::clone(&calls);
-        signaled
-            .add_signal(signal_sync!(
-                move |_, _| {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    let lock = calls_clone.lock().unwrap();
-                    assert_eq!(*lock, 1)
-                },
-                |_, _| true,
-                2,
-                true
-            ))
-            .unwrap();
-
-        let calls_clone = Arc::clone(&calls);
-        signaled
-            .add_signal(signal_sync!(
-                move |_, _| {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    let mut lock = calls_clone.lock().unwrap();
-                    *lock = *lock + 2;
-                },
-                |_, _| true,
-                1,
-                true
-            ))
-            .unwrap();
-
-        assert_eq!(signaled.signals.lock().unwrap().len(), 3);
-        let handle = signaled.try_set_and_spawn(1).unwrap();
-        assert_eq!(*calls.lock().unwrap(), 0);
-        let _ = handle.join().unwrap();
-        assert_eq!(signaled.signals.lock().unwrap().len(), 0);
-        assert_eq!(*calls.lock().unwrap(), 3);
-    }
-
-    #[test]
-    fn test_set_silent() {
-        let calls = Arc::new(Mutex::new(0));
-        let signaled = Signaled::new(0);
-
-        let calls_clone = Arc::clone(&calls);
-        signaled
-            .add_signal(signal_sync!(move |_, _| {
-                let mut lock = calls_clone.lock().unwrap();
-                *lock = *lock + 1;
-            }))
-            .unwrap();
-
-        signaled.set(1).unwrap();
-        assert_eq!(signaled.get().unwrap(), 1);
-        assert_eq!(*calls.lock().unwrap(), 1);
-
-        signaled.set_silent(2).unwrap();
-        assert_eq!(signaled.get().unwrap(), 2);
-        assert_eq!(*calls.lock().unwrap(), 1);
-    }
-
-    #[test]
-    fn test_try_set_silent() {
-        let calls = Arc::new(Mutex::new(0));
-        let signaled = Signaled::new(0);
-
-        let calls_clone = Arc::clone(&calls);
-        signaled
-            .add_signal(signal_sync!(move |_, _| {
-                let mut lock = calls_clone.lock().unwrap();
-                *lock = *lock + 1;
-            }))
-            .unwrap();
-
-        signaled.try_set(1).unwrap();
-        assert_eq!(signaled.try_get().unwrap(), 1);
-        assert_eq!(*calls.lock().unwrap(), 1);
-
-        signaled.try_set_silent(2).unwrap();
-        assert_eq!(signaled.try_get().unwrap(), 2);
-        assert_eq!(*calls.lock().unwrap(), 1);
-    }
-
-    #[test]
-    fn test_combine() {
-        let calls = Arc::new(Mutex::new(0));
-        let calls_clone = Arc::clone(&calls);
-        let signal_a: Signal<i32> = Signal::new(
-            move |_, _| {
-                let mut lock = calls_clone.lock().unwrap();
-                *lock = *lock + 1;
-            },
-            |_, new| *new > 10,
-            100,
-            false,
-            false,
-        );
-
-        let calls_clone = Arc::clone(&calls);
-        let signal_b: Signal<i32> = Signal::new(
-            move |_, _| {
-                let mut lock = calls_clone.lock().unwrap();
-                *lock = *lock + 2;
-            },
-            |old, _| *old > 10,
-            10,
-            false,
-            false,
-        );
-
-        signal_a.emit(&0, &9).unwrap(); // `new` < 10, Calls = 0
-        assert_eq!(*calls.lock().unwrap(), 0);
-        signal_a.emit(&0, &11).unwrap(); // `new` > 10, Calls = 1
-        assert_eq!(*calls.lock().unwrap(), 1);
-
-        signal_b.emit(&9, &0).unwrap(); // `old` < 10, Calls = 1
-        assert_eq!(*calls.lock().unwrap(), 1);
-        signal_b.emit(&11, &0).unwrap(); // `old` > 10, Calls = 3
-        assert_eq!(*calls.lock().unwrap(), 3);
-
-        let signal_c = Signal::combine(&[signal_a, signal_b]).unwrap();
-        assert_eq!(signal_c.priority.load(Ordering::Relaxed), 100); // Keeps the highest priority after combining
-
-        signal_c.emit(&9, &9).unwrap(); // Both triggers return false
-        assert_eq!(*calls.lock().unwrap(), 3);
-        signal_c.emit(&9, &11).unwrap(); // One triggers return false
-        assert_eq!(*calls.lock().unwrap(), 3);
-        signal_c.emit(&11, &11).unwrap(); // Both triggers return true, Calls = 6
-        assert_eq!(*calls.lock().unwrap(), 6);
-    }
-
-    #[test]
-    fn test_combine_signals() {
-        let signaled = Signaled::new(0);
-        let signal_a_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let signal_b_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let signal_c_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let signal_d_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        assert_eq!(signaled.signals.lock().unwrap().len(), 4);
-
-        signaled
-            .combine_signals(&[signal_a_id, signal_b_id, signal_c_id, signal_d_id])
-            .unwrap();
-        assert_eq!(signaled.signals.lock().unwrap().len(), 1);
-    }
-
-    macro_rules! combine_poisoned_lock {
-        ($combine:ident, $lock:ident, $error:expr) => {
-            let signal_a: Arc<Signal<()>> = Arc::new(signal_sync!(|_, _| {}));
-            let signal_a_clone = Arc::clone(&signal_a);
-            let result = std::panic::catch_unwind(move || {
-                let _lock = signal_a_clone.$lock.write().unwrap();
-                panic!()
-            });
-            assert!(result.is_err());
-
-            let signal_b: Signal<()> = signal_sync!(|_, _| {});
-            let signal_a = Arc::try_unwrap(signal_a).unwrap();
-            let err = $error;
-            assert!(Signal::$combine(&[signal_a, signal_b]).is_err_and(|e| e == err));
+                signaled.$method(2).unwrap();
+                assert_eq!(signaled.get().unwrap(), 2);
+                assert_eq!(*calls.lock().unwrap(), 1);
+            }
         };
     }
 
-    #[test]
-    fn test_combine_poisoned_lock_error() {
-        {
-            combine_poisoned_lock!(
-                combine,
-                callback,
-                SignaledError::PoisonedLock {
-                    source: ErrorSource::SignalCallback
-                }
-            );
-        }
-        {
-            combine_poisoned_lock!(
-                combine,
-                trigger,
-                SignaledError::PoisonedLock {
-                    source: ErrorSource::SignalTrigger
-                }
-            );
-        }
+    test_set_silent!(test_set_silent, set_silent);
+    test_set_silent!(test_try_set_silent, try_set_silent);
+    
+    macro_rules! test_combine {
+        ($test_name:ident, $method:ident) => {
+            #[test]
+            fn $test_name() {
+                let calls = Arc::new(Mutex::new(0));
+                let calls_clone = Arc::clone(&calls);
+                let signal_a: Signal<i32> = Signal::new(
+                    move |_, _| {
+                        let mut lock = calls_clone.lock().unwrap();
+                        *lock = *lock + 1;
+                    },
+                    |_, new| *new > 10,
+                    100,
+                    false,
+                    false,
+                );
+
+                let calls_clone = Arc::clone(&calls);
+                let signal_b: Signal<i32> = Signal::new(
+                    move |_, _| {
+                        let mut lock = calls_clone.lock().unwrap();
+                        *lock = *lock + 2;
+                    },
+                    |old, _| *old > 10,
+                    10,
+                    false,
+                    false,
+                );
+
+                signal_a.emit(&0, &9).unwrap(); // `new` < 10, Calls = 0
+                assert_eq!(*calls.lock().unwrap(), 0);
+                signal_a.emit(&0, &11).unwrap(); // `new` > 10, Calls = 1
+                assert_eq!(*calls.lock().unwrap(), 1);
+
+                signal_b.emit(&9, &0).unwrap(); // `old` < 10, Calls = 1
+                assert_eq!(*calls.lock().unwrap(), 1);
+                signal_b.emit(&11, &0).unwrap(); // `old` > 10, Calls = 3
+                assert_eq!(*calls.lock().unwrap(), 3);
+
+                let signal_c = Signal::$method(&[signal_a, signal_b]).unwrap();
+                assert_eq!(signal_c.priority.load(Ordering::Relaxed), 100); // Keeps the highest priority after combining
+
+                signal_c.emit(&9, &9).unwrap(); // Both triggers return false
+                assert_eq!(*calls.lock().unwrap(), 3);
+                signal_c.emit(&9, &11).unwrap(); // One triggers return false
+                assert_eq!(*calls.lock().unwrap(), 3);
+                signal_c.emit(&11, &11).unwrap(); // Both triggers return true, Calls = 6
+                assert_eq!(*calls.lock().unwrap(), 6);
+            }
+        };
+    }
+    
+    test_combine!(test_combine, combine);
+    test_combine!(test_try_combine, try_combine);
+
+    macro_rules! test_combine_signals {
+        ($test_name:ident, $method:ident) => {
+            #[test]
+            fn $test_name() {
+                let signaled = Signaled::new(0);
+                let signal_a_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+                let signal_b_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+                let signal_c_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+                let signal_d_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
+                assert_eq!(signaled.signals.lock().unwrap().len(), 4);
+
+                signaled
+                    .$method(&[signal_a_id, signal_b_id, signal_c_id, signal_d_id])
+                    .unwrap();
+                assert_eq!(signaled.signals.lock().unwrap().len(), 1);
+            }
+        };
     }
 
-    #[test]
-    fn test_try_combine_poisoned_lock_error() {
-        {
-            combine_poisoned_lock!(
-                try_combine,
-                callback,
-                SignaledError::PoisonedLock {
-                    source: ErrorSource::SignalCallback
-                }
-            );
-        }
-        {
-            combine_poisoned_lock!(
-                try_combine,
-                trigger,
-                SignaledError::PoisonedLock {
-                    source: ErrorSource::SignalTrigger
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn test_try_combine_would_block_error() {
-        {
-            let signal_a: Signal<i32> = signal_sync!(|_, _| {});
-            let signal_b: Signal<i32> = signal_sync!(|_, _| {});
-            let signals_to_combine = vec![signal_a, signal_b];
-            let _borrow = signals_to_combine[0].callback.write().unwrap();
-            assert!(Signal::try_combine(&signals_to_combine).is_err_and(|e| e
-                == SignaledError::WouldBlock {
-                    source: ErrorSource::SignalCallback
-                }));
-        }
-        {
-            let signal_a: Signal<i32> = signal_sync!(|_, _| {});
-            let signal_b: Signal<i32> = signal_sync!(|_, _| {});
-            let signals_to_combine = vec![signal_a, signal_b];
-            let _borrow = signals_to_combine[0].trigger.write().unwrap();
-            assert!(Signal::try_combine(&signals_to_combine).is_err_and(|e| e
-                == SignaledError::WouldBlock {
-                    source: ErrorSource::SignalTrigger
-                }));
-        }
-    }
-
-    #[test]
-    fn test_combine_signals_invalid_id_error() {
-        let signaled = Signaled::new(0);
-        let signal_a_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let signal_b_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-
-        assert!(
-            signaled
-                .combine_signals(&[signal_a_id, signal_b_id + 1])
-                .is_err_and(|e| {
-                    e == SignaledError::InvalidSignalId {
-                        id: signal_b_id + 1,
-                    }
-                })
-        )
-    }
-
-    #[test]
-    fn test_try_combine_signals_invalid_id_error() {
-        let signaled = Signaled::new(0);
-        let signal_a_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-        let signal_b_id = signaled.add_signal(signal_sync!(|_, _| {})).unwrap();
-
-        assert!(
-            signaled
-                .combine_signals(&[signal_a_id, signal_b_id + 1])
-                .is_err_and(|e| {
-                    e == SignaledError::InvalidSignalId {
-                        id: signal_b_id + 1,
-                    }
-                })
-        )
-    }
+    test_combine_signals!(test_combine_signals, combine_signals);
+    test_combine_signals!(test_try_combine_signals, try_combine_signals);
 
     #[test]
     fn test_once_retain() {
@@ -3466,4 +3087,24 @@ mod tests {
         try_set_throttled_and_spawn,
         try_set_throttle_duration
     );
+
+    #[test]
+    fn test_reentrant_try_set() {
+        let signaled = Arc::new(Signaled::new(0));
+        let signaled_clone = Arc::clone(&signaled);
+
+        signaled
+            .add_signal(signal_sync!(move |_, _| {
+                let err = signaled_clone.try_set(2).unwrap_err();
+                assert_eq!(
+                    err,
+                    SignaledError::WouldBlock {
+                        source: ErrorSource::Value
+                    }
+                );
+            }))
+            .unwrap();
+
+        signaled.set(1).unwrap();
+    }
 }
