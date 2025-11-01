@@ -1256,7 +1256,11 @@ mod tests {
     fn test_invalid_id() {
         let signaled = Signaled::new(0);
         let signal_id = signaled.add_signal(signal!(|_, _| {})).unwrap();
-        assert!(signaled.remove_signal(signal_id + 1).is_err_and(|e| e == SignaledError::InvalidSignalId { id: signal_id + 1 }));
+        assert!(
+            signaled
+                .remove_signal(signal_id + 1)
+                .is_err_and(|e| e == SignaledError::InvalidSignalId { id: signal_id + 1 })
+        );
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

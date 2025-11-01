@@ -2911,7 +2911,7 @@ mod tests {
 
     test_set_silent!(test_set_silent, set_silent);
     test_set_silent!(test_try_set_silent, try_set_silent);
-    
+
     macro_rules! test_combine {
         ($test_name:ident, $method:ident) => {
             #[test]
@@ -2963,7 +2963,7 @@ mod tests {
             }
         };
     }
-    
+
     test_combine!(test_combine, combine);
     test_combine!(test_try_combine, try_combine);
 
