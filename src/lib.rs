@@ -23,11 +23,11 @@ pub enum ErrorSource {
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum SignaledError {
-    /// An immutable borrow failed because the value was already mutably borrowed.
+    /// Attempted to borrow a value that was already mutably borrowed.
     BorrowError { source: ErrorSource },
-    /// A mutable borrow failed because the value was already borrowed.
+    /// Attempted to mutably borrow a value that was already borrowed.
     BorrowMutError { source: ErrorSource },
-    /// The provided `SignalId` does not correspond to any [`Signal`].
+    /// Attempted to target a [`Signal`] with a [`SignalId`] that does not match any [`Signal`].
     InvalidSignalId { id: SignalId },
 }
 
@@ -46,9 +46,13 @@ pub fn new_signal_id() -> SignalId {
     id
 }
 
+/// [`Signal`] callback signature.
 pub type Callback<T> = dyn Fn(&T, &T) + 'static;
+/// [`Signal`] callback container.
 pub type SignalCallback<T> = RefCell<Rc<Callback<T>>>;
+/// [`Signal`] trigger signature.
 pub type Trigger<T> = dyn Fn(&T, &T) -> bool + 'static;
+/// [`Signal`] trigger container.
 pub type SignalTrigger<T> = RefCell<Rc<Trigger<T>>>;
 
 /// A signal that executes a callback when a [`Signaled`] value changes, if its trigger condition is met.
@@ -75,7 +79,8 @@ pub struct Signal<T: 'static> {
     id: u64,
     /// Number used in the [`Signaled`] struct to decide the order of execution of the signals.
     priority: Cell<u64>,
-    /// Boolean representing if the [`Signal`] should be removed from the [`Signaled`] after its callback is successfully invoked once. The removal only occurs if the signal's trigger condition is met during emission.
+    /// Boolean representing if the [`Signal`] should be removed from the [`Signaled`] after its `callback` is successfully invoked once. 
+    /// The removal only occurs if the [`Signal`] `trigger` condition is met during emission, resulting in the `callback` being invoked.
     once: Cell<bool>,
     /// Boolean representing if the [`Signal`] should not invoke the callback when emitted.
     mute: Cell<bool>,
@@ -241,7 +246,7 @@ impl<T> Signal<T> {
         self.mute.set(is_mute);
     }
 
-    /// Combines `N` amount of [`Signal`]s returning a single combined [`Signal`] instance.
+    /// Combines `N` amount of [`Signal`]s returning a single combined [`Signal`] instance and consuming the provided [`Signal`] instances.
     ///
     /// The order in which each `callback` will be called depends on the order that the [`Signal`]s are passed into the argument's slice.
     ///
@@ -880,7 +885,7 @@ impl<T> Signaled<T> {
         }
     }
 
-    /// Combines multiple [`Signal`]s by their `id` into a single [`Signal`].
+    /// Combines multiple [`Signal`]s by their `id` into a single [`Signal`] consuming the [`Signal`] instances associated with the provided `id`s.
     ///
     /// This function finds signals by their `id`, removes them from the `Signaled` instance,
     /// and then uses [`Signal::combine()`] to create a new, single [`Signal`] instance.

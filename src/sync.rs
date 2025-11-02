@@ -29,11 +29,11 @@ pub enum ErrorSource {
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum SignaledError {
-    /// Tried to acquire a poisoned lock.
+    /// Attempted to acquire a poisoned lock (a lock previously panicked or invalidated).
     PoisonedLock { source: ErrorSource },
-    /// Tried to acquire a lock that is held elsewhere.
+    /// Attempted to acquire a lock that is currently held somewhere else.
     WouldBlock { source: ErrorSource },
-    /// The provided `SignalId` does not correspond to any [`Signal`].
+    /// Attempted to target a [`Signal`] with a [`SignalId`] that does not match any [`Signal`].
     InvalidSignalId { id: SignalId },
 }
 
@@ -50,9 +50,13 @@ pub fn new_signal_id() -> SignalId {
     id
 }
 
+/// [`Signal`] callback signature.
 pub type CallbackSync<T> = dyn Fn(&T, &T) + Send + Sync + 'static;
+/// [`Signal`] callback container.
 pub type SignalCallbackSync<T> = Arc<RwLock<Arc<CallbackSync<T>>>>;
+/// [`Signal`] trigger signature.
 pub type TriggerSync<T> = dyn Fn(&T, &T) -> bool + Send + Sync + 'static;
+/// [`Signal`] trigger container.
 pub type SignalTriggerSync<T> = Arc<RwLock<Arc<TriggerSync<T>>>>;
 
 /// A signal that executes a callback when a [`Signaled`] value changes, if its trigger condition is met.
@@ -79,7 +83,8 @@ pub struct Signal<T: Send + Sync + 'static> {
     id: u64,
     /// Number used in the [`Signaled`] struct to decide the order of execution of the signals.
     priority: AtomicU64,
-    /// Boolean representing if the [`Signal`] should be removed from the [`Signaled`] after its callback is successfully invoked once. The removal only occurs if the signal's trigger condition is met during emission.
+    /// Boolean representing if the [`Signal`] should be removed from the [`Signaled`] after its `callback` is successfully invoked once. 
+    /// The removal only occurs if the [`Signal`] `trigger` condition is met during emission, resulting in the `callback` being invoked.
     once: AtomicBool,
     /// Boolean representing if the [`Signal`] should not invoke the callback when emitted.
     mute: AtomicBool,
@@ -405,7 +410,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
         self.mute.store(is_mute, Ordering::Relaxed);
     }
 
-    /// Combines `N` amount of [`Signal`]s returning a single combined [`Signal`] instance.
+    /// Combines `N` amount of [`Signal`]s returning a single combined [`Signal`] instance and consuming the provided [`Signal`] instances.
     ///
     /// The order in which each `callback` will be called depends on the order that the [`Signal`]s are passed into the argument's slice.
     ///
@@ -502,7 +507,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
         })
     }
 
-    /// Combines `N` amount of [`Signal`]s returning a single combined [`Signal`] instance.
+    /// Combines `N` amount of [`Signal`]s returning a single combined [`Signal`] instance and consuming the provided [`Signal`] instances.
     ///
     /// This function unlike [`Signal::combine`], is non-blocking so there are no re-entrant calls that block until the `callback` and `trigger` locks can be acquired.
     ///
@@ -651,7 +656,7 @@ impl<T: Send + Sync + 'static> Default for Signal<T> {
     }
 }
 
-/// Creates a [`Signal`] with any number of parameters.
+/// Creates a [`Signal`] (thread-safe) with any number of parameters.
 ///
 /// # Examples
 /// ```
@@ -1787,7 +1792,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Combines multiple [`Signal`]s by their `id` into a single [`Signal`].
+    /// Combines multiple [`Signal`]s by their `id` into a single [`Signal`] consuming the [`Signal`] instances associated with the provided `id`s.
     ///
     /// This function finds signals by their `id`, removes them from the `Signaled` instance,
     /// and then uses [`Signal::combine()`] to create a new, single [`Signal`] instance.
@@ -1870,7 +1875,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         Ok(id)
     }
 
-    /// Combines multiple [`Signal`]s by their `id` into a single [`Signal`].
+    /// Combines multiple [`Signal`]s by their `id` into a single [`Signal`] consuming the [`Signal`] instances associated with the provided `id`s.
     ///
     /// This function unlike [`Signaled::combine_signals`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
     ///
