@@ -4,8 +4,10 @@
 
 # Signaled
 
+[![Crates.io](https://img.shields.io/crates/d/signaled.svg?label=downloads)](https://crates.io/crates/signaled)
+[![Crates.io](https://img.shields.io/crates/v/signaled.svg)](https://crates.io/crates/signaled)
+[![Docs.rs](https://docs.rs/signaled/badge.svg)](https://docs.rs/signaled)
 <img src="https://github.com/kralloie/signaled/actions/workflows/tests.yml/badge.svg" alt="test">
-<img src="https://github.com/kralloie/signaled/actions/workflows/docs.yml/badge.svg" alt="docs">
 <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
 </div>
 <br>
