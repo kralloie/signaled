@@ -13,17 +13,17 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum ErrorSource {
-    /// Error coming from [`Signaled`] `value`.
+    /// Error coming from [`Signaled::val`].
     Value,
-    /// Error coming from [`Signaled`] `signals`.
+    /// Error coming from [`Signaled::signals`].
     Signals,
-    /// Error coming from [`Signaled`] `throttle_instant`.
+    /// Error coming from [`Signaled::throttle_instant`].
     ThrottleInstant,
-    /// Error coming from [`Signaled`] `throttle_duration`.
+    /// Error coming from [`Signaled::throttle_duration`].
     ThrottleDuration,
-    /// Error coming from [`Signal`] `callback`.
+    /// Error coming from [`Signal::callback`].
     SignalCallback,
-    /// Error coming from [`Signal`] `trigger`.
+    /// Error coming from [`Signal::trigger`].
     SignalTrigger,
 }
 
@@ -59,10 +59,21 @@ pub type TriggerSync<T> = dyn Fn(&T, &T) -> bool + Send + Sync + 'static;
 /// [`Signal`] trigger container.
 pub type SignalTriggerSync<T> = Arc<RwLock<Arc<TriggerSync<T>>>>;
 
-/// A signal that executes a callback when a [`Signaled`] value changes, if its trigger condition is met.
+/// A signal that executes its [`Signal::callback`] when a [`Signaled::val`] changes through [`Signaled::set()`] or similar methods, if its [`Signal::trigger`] condition is met.
 ///
-/// Signals have a unique `id`, a priority for ordering execution, and a trigger function to
-/// conditionally execute the callback.
+/// ## *Signal* has the following properties:
+/// 
+/// - [`Signal::callback`]: [`SignalCallbackSync`] that is invoked when the [`Signal`] is emitted.
+/// 
+/// - [`Signal::trigger`]: [`SignalTriggerSync`] that returns a [`bool`] representing if the [`Signal::callback`] will be invoked or not.
+/// 
+/// - [`Signal::id`]: Unique [`SignalId`] that serves as identifier for the [`Signal`].
+/// 
+/// - [`Signal::priority`]: [`AtomicU64`] that the parent [`Signaled`] uses to decide the order of execution of the [`Signaled::signals`].
+/// 
+/// - [`Signal::once`]: [`AtomicBool`] that if set to `true` will make the [`Signaled`] parent remove this [`Signal`] from [`Signaled::signals`] after the [`Signal::callback`] is called once.
+/// 
+/// - [`Signal::mute`]: [`AtomicBool`] that if set to `true` will prevent this [`Signal`] from being emitted.
 ///
 /// # Examples
 ///
@@ -75,19 +86,32 @@ pub type SignalTriggerSync<T> = Arc<RwLock<Arc<TriggerSync<T>>>>;
 /// signaled.set(42).unwrap(); // Prints "Old: 0 | New: 42"
 /// ```
 pub struct Signal<T: Send + Sync + 'static> {
-    /// Function to run when the [`Signal`] is emitted and the trigger condition is met.
+    /// Function to run when the [`Signal`] is emitted and the [`Signal::trigger`] condition is met.
     callback: SignalCallbackSync<T>,
-    /// Function that decides if the callback will be invoked or not when the [`Signal`] is emitted.
+    /// Function that decides if the [`Signal::callback`] will be invoked or not when the [`Signal`] is emitted.
     trigger: SignalTriggerSync<T>,
     /// Identifier for the [`Signal`].
-    id: u64,
+    pub id: u64,
     /// Number used in the [`Signaled`] struct to decide the order of execution of the signals.
     priority: AtomicU64,
-    /// Boolean representing if the [`Signal`] should be removed from the [`Signaled`] after its `callback` is successfully invoked once. 
-    /// The removal only occurs if the [`Signal`] `trigger` condition is met during emission, resulting in the `callback` being invoked.
+    /// Boolean representing if the [`Signal`] should be removed from the [`Signaled`] after its [`Signal::callback`] is successfully invoked once.
+    /// The removal only occurs if the [`Signal::trigger`] condition is met during emission, resulting in the [`Signal::callback`] being invoked.
     once: AtomicBool,
-    /// Boolean representing if the [`Signal`] should not invoke the callback when emitted.
+    /// Boolean representing if the [`Signal`] should not invoke the [`Signal::callback`] when emitted.
     mute: AtomicBool,
+}
+
+/// A struct containing the information of each field of [`Signal`]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalInfo {
+    /// Unique [`SignalId`] identifier of the [`Signal`].
+    pub id: u64,
+    /// [`Signal::priority`] of the [`Signal`] that decides in which order it will be executed.
+    pub priority: u64,
+    /// [`Signal::once`] Flag of the [`Signal`] that decides if it should be removed from the [`Signaled::signals`] collection after executed.
+    pub once: bool,
+    /// [`Signal::mute`] Flag of the [`Signal`] that decides if it should be emitted when the parent [`Signaled`] calls [`Signaled::emit_signals()`]
+    pub mute: bool,
 }
 
 impl<T: Send + Sync + 'static> Signal<T> {
@@ -95,11 +119,11 @@ impl<T: Send + Sync + 'static> Signal<T> {
     ///
     /// # Arguments
     ///
-    /// * `callback` - Function to execute when the signal is emitted.
-    /// * `trigger` -  Function that returns a boolean representing if the `callback` will be invoked or not.
+    /// * `callback` - Function to execute when the [`Signal`] is emitted.
+    /// * `trigger` -  Function that returns a boolean representing if the [`Signal::callback`] will be invoked or not.
     /// * `priority` - Number representing the priority in which the [`Signal`] will be emitted from the parent [`Signaled`].
-    /// * `once` - Boolean representing if the [`Signal`] will be removed from the parent [`Signaled`] `signals` after being emitted once. The removal only occurs if the signal's trigger condition is met during emission.
-    /// * `mute` - Boolean representing if the `callback` will be invoked or not.
+    /// * `once` - Boolean representing if the [`Signal`] will be removed from the parent [`Signaled::signals`] after being emitted once. The removal only occurs if the [`Signal::trigger`] condition is met during emission.
+    /// * `mute` - Boolean representing if the [`Signal::callback`] will be invoked or not.
     ///
     /// # Examples
     ///
@@ -126,16 +150,16 @@ impl<T: Send + Sync + 'static> Signal<T> {
         }
     }
 
-    /// Emits the signal, executing the callback if the trigger condition is met.
+    /// Emits the [`Signal`], executing the [`Signal::callback`] function if the [`Signal::trigger`] condition is met.
     ///
     /// # Arguments
     ///
-    /// * `old` - The old `val` of the [`Signaled`].
-    /// * `new` - The new `val` of the [`Signaled`].
+    /// * `old` - The old value of [`Signaled::val`].
+    /// * `new` - The new value of [`Signaled::val`].
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `callback` or `trigger` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signal::callback`] or [`Signal::trigger`] locks are poisoned.
     ///
     /// # Examples
     ///
@@ -174,20 +198,20 @@ impl<T: Send + Sync + 'static> Signal<T> {
         Ok(())
     }
 
-    /// Emits the signal, executing the callback if the trigger condition is met.
+    /// Emits the signal, executing the [`Signal::callback`] function if the [`Signal::trigger`] condition is met.
     ///
-    /// This function unlike [`Signal::emit`], is non-blocking so there are no re-entrant calls that block until the `trigger` and `callback` locks can be acquired.
+    /// This function unlike [`Signal::emit`], is non-blocking so there are no re-entrant calls that block until the [`Signal::trigger`] and [`Signal::callback`] locks can be acquired.
     ///
     /// # Arguments
     ///
-    /// * `old` - The old `val` of the [`Signaled`].
-    /// * `new` - The new `val` of the [`Signaled`].
+    /// * `old` - The old value of [`Signaled::val`].
+    /// * `new` - The new value of [`Signaled::val`].
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `callback` or `trigger` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signal::callback`] or [`Signal::trigger`] locks are poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `callback` or `trigger` locks are held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signal::callback`] or [`Signal::trigger`] locks are held elsewhere.
     ///
     /// # Examples
     ///
@@ -225,15 +249,15 @@ impl<T: Send + Sync + 'static> Signal<T> {
         Ok(())
     }
 
-    /// Sets a new callback for the [`Signal`].
+    /// Sets a new [`Signal::callback`] for the [`Signal`].
     ///
     /// # Arguments
     ///
-    /// * `callback` - The new callback function.
+    /// * `callback` - The new [`Signal::callback`] function.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `callback` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signal::callback`] lock is poisoned.
     ///     
     /// # Warnings
     ///
@@ -254,19 +278,19 @@ impl<T: Send + Sync + 'static> Signal<T> {
         Ok(())
     }
 
-    /// Sets a new callback for the [`Signal`].
+    /// Sets a new [`Signal::callback`] for the [`Signal`].
     ///
-    /// This function unlike [`Signal::set_callback`], is non-blocking so there are no re-entrant calls that block until the `callback` lock can be acquired.
+    /// This function unlike [`Signal::set_callback`], is non-blocking so there are no re-entrant calls that block until the [`Signal::callback`] lock can be acquired.
     ///
     /// # Arguments
     ///
-    /// * `callback` - The new callback function.
+    /// * `callback` - The new [`Signal::callback`] function.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `callback` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signal::callback`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `callback` lock is held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signal::callback`] lock is held elsewhere.
     pub fn try_set_callback<F: Fn(&T, &T) + Send + Sync + 'static>(
         &self,
         callback: F,
@@ -283,17 +307,17 @@ impl<T: Send + Sync + 'static> Signal<T> {
         Ok(())
     }
 
-    /// Sets a new trigger for the [`Signal`].
+    /// Sets a new [`Signal::trigger`] for the [`Signal`].
     ///
-    /// Default trigger always returns `true`.
+    /// Default [`Signal::trigger`] always returns `true`.
     ///
     /// # Arguments
     ///
-    /// * `trigger` - The new trigger function.
+    /// * `trigger` - The new [`Signal::trigger`] function.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `trigger` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signal::trigger`] lock is poisoned.
     ///
     /// # Warnings
     ///
@@ -316,19 +340,19 @@ impl<T: Send + Sync + 'static> Signal<T> {
 
     /// Sets a new trigger for the [`Signal`].
     ///
-    /// This function unlike [`Signal::set_trigger`], is non-blocking so there are no re-entrant calls that block until the `trigger` lock can be acquired.
+    /// This function unlike [`Signal::set_trigger`], is non-blocking so there are no re-entrant calls that block until the [`Signal::trigger`] lock can be acquired.
     ///
-    /// Default trigger always returns `true`.
+    /// Default [`Signal::trigger`] always returns `true`.
     ///
     /// # Arguments
     ///
-    /// * `trigger` - The new trigger function.
+    /// * `trigger` - The new [`Signal::trigger`] function.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `trigger` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signal::trigger`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `trigger` lock is held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signal::trigger`] lock is held elsewhere.
     pub fn try_set_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(
         &self,
         trigger: F,
@@ -345,11 +369,11 @@ impl<T: Send + Sync + 'static> Signal<T> {
         Ok(())
     }
 
-    /// Sets the [`Signal`] `trigger` to always return true.
+    /// Sets the [`Signal::trigger`] to always return true.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `trigger` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signal::trigger`] lock is poisoned.
     ///
     /// # Warnings
     ///
@@ -367,15 +391,15 @@ impl<T: Send + Sync + 'static> Signal<T> {
         Ok(())
     }
 
-    /// Sets the [`Signal`] `trigger` to always return true.
+    /// Sets the [`Signal::trigger`] to always return true.
     ///
-    /// This function unlike [`Signal::remove_trigger`], is non-blocking so there are no re-entrant calls that block until the `trigger` lock can be acquired.
+    /// This function unlike [`Signal::remove_trigger`], is non-blocking so there are no re-entrant calls that block until the [`Signal::trigger`] lock can be acquired.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `trigger` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signal::trigger`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `trigger` lock is held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signal::trigger`] lock is held elsewhere.
     pub fn try_remove_trigger(&self) -> Result<(), SignaledError> {
         let mut lock = self.trigger.try_write().map_err(|e| match e {
             TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
@@ -391,38 +415,38 @@ impl<T: Send + Sync + 'static> Signal<T> {
 
     /// Sets the execution priority of the [`Signal`].
     ///
-    /// Default priority is 0.
+    /// Default [`Signal::priority`] is 0.
     ///
     /// # Arguments
     ///
-    /// * `priority` The new priority number, bigger number means higher priority.
+    /// * `priority` The new [`Signal::priority`] number, bigger number means higher priority.
     pub fn set_priority(&self, priority: u64) {
         self.priority.store(priority, Ordering::Relaxed);
     }
 
-    /// Sets the `once` flag of the [`Signal`].
+    /// Sets the [`Signal::once`] flag of the [`Signal`].
     pub fn set_once(&self, is_once: bool) {
         self.once.store(is_once, Ordering::Relaxed);
     }
 
-    /// Sets the `mute` flag of the [`Signal`].
+    /// Sets the [`Signal::mute`] flag of the [`Signal`].
     pub fn set_mute(&self, is_mute: bool) {
         self.mute.store(is_mute, Ordering::Relaxed);
     }
 
     /// Combines `N` amount of [`Signal`]s returning a single combined [`Signal`] instance and consuming the provided [`Signal`] instances.
     ///
-    /// The order in which each `callback` will be called depends on the order that the [`Signal`]s are passed into the argument's slice.
+    /// The order in which each [`Signal::callback`] will be called depends on the order that the [`Signal`]s are passed into the argument's slice.
     ///
     /// * `callback` will invoke all callbacks from the combined [`Signal`]s.
     ///
-    /// * `trigger` will combine all triggers only returning `true` if every `trigger` does so.
+    /// * `trigger` will combine all triggers only returning `true` if every [`Signal::trigger`] does so.
     ///
-    /// * `priority` will be the highest `priority` of the provided `signals`.
+    /// * `priority` will be the highest [`Signal::priority`] of the provided [`Signal`]s.
     ///
-    /// * `mute` and `once` will be `false` by default.
+    /// * [`Signal::mute`] and [`Signal::once`] will be `false` by default.
     ///
-    /// * `id` will be a new unique [`SignalId`].
+    /// * [`Signal::id`] will be a new unique [`SignalId`].
     ///
     /// # Arguments
     ///
@@ -430,7 +454,7 @@ impl<T: Send + Sync + 'static> Signal<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if any of the provided [`Signal`] instances `callback` or `trigger` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if any of the provided [`Signal`] instances [`Signal::callback`] or [`Signal::trigger`] locks are poisoned.
     ///
     /// # Examples
     /// ```
@@ -508,20 +532,20 @@ impl<T: Send + Sync + 'static> Signal<T> {
     }
 
     /// Combines `N` amount of [`Signal`]s returning a single combined [`Signal`] instance and consuming the provided [`Signal`] instances.
-    ///
+    /// 
     /// This function unlike [`Signal::combine`], is non-blocking so there are no re-entrant calls that block until the `callback` and `trigger` locks can be acquired.
     ///
-    /// The order in which each `callback` will be called depends on the order that the [`Signal`]s are passed into the argument's slice.
+    /// The order in which each [`Signal::callback`] will be called depends on the order that the [`Signal`]s are passed into the argument's slice.
     ///
     /// * `callback` will invoke all callbacks from the combined [`Signal`]s.
     ///
-    /// * `trigger` will combine all triggers only returning `true` if every `trigger` does so.
+    /// * `trigger` will combine all triggers only returning `true` if every [`Signal::trigger`] does so.
     ///
-    /// * `priority` will be the highest `priority` of the provided `signals`.
+    /// * `priority` will be the highest [`Signal::priority`] of the provided [`Signal`]s.
     ///
-    /// * `mute` and `once` will be `false` by default.
+    /// * [`Signal::mute`] and [`Signal::once`] will be `false` by default.
     ///
-    /// * `id` will be a new unique [`SignalId`].
+    /// * [`Signal::id`] will be a new unique [`SignalId`].
     ///
     /// # Arguments
     ///
@@ -529,9 +553,9 @@ impl<T: Send + Sync + 'static> Signal<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if any of the provided [`Signal`] instances `callback` or `trigger` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if any of the provided [`Signal`] instances [`Signal::callback`] or [`Signal::trigger`] locks are poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if any of the provided [`Signal`] instances `callback` or `trigger` locks are held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if any of the provided [`Signal`] instances [`Signal::callback`] or [`Signal::trigger`] locks are held elsewhere.
     ///
     /// # Examples
     /// ```
@@ -615,6 +639,16 @@ impl<T: Send + Sync + 'static> Signal<T> {
             mute: AtomicBool::new(false),
         })
     }
+
+    /// Returns [`SignalInfo`] with the data related to each field of [`Signal`]
+    pub fn get_info(&self) -> SignalInfo {
+        SignalInfo {
+            id: self.id,
+            priority: self.priority.load(Ordering::Relaxed).clone(),
+            once: self.once.load(Ordering::Relaxed).clone(),
+            mute: self.mute.load(Ordering::Relaxed).clone(),
+        }
+    }
 }
 
 impl<T: Send + Sync + 'static> Display for Signal<T> {
@@ -667,11 +701,11 @@ impl<T: Send + Sync + 'static> Default for Signal<T> {
 /// ```
 ///
 /// Arguments fill fields in this order:
-/// 1. callback  
-/// 2. trigger  
-/// 3. priority  
-/// 4. once  
-/// 5. mute  
+/// 1. `callback` - [`Signal::callback`]  
+/// 2. `trigger` - [`Signal::trigger`]  
+/// 3. `priority` - [`Signal::priority`]
+/// 4. `once` - [`Signal::once`]
+/// 5. `mute` - [`Signal::mute`]
 ///
 /// Missing fields use their [`Default`] values.
 #[macro_export]
@@ -705,8 +739,18 @@ macro_rules! signal_sync {
 ///
 /// [`Signaled<T>`] manages a value of type `T` and a collection of [`Signal<T>`] instances.
 ///
-/// When the value is updated via `set`, all [`Signal`]s are emitted in order of descending priority,
+/// When the value is updated via [`Signaled::set`], all [`Signal`]s in [`Signaled::signals`] are emitted in order of descending priority,
 /// provided their trigger conditions are met.
+/// 
+/// ## *Signaled* has the following properties:
+/// 
+/// - [`Signaled::val`]: [`RwLock<T>`] that contains the wrapped value that emits [`Signal`]s when changed through [`Signaled::set()`] and similar methods.
+/// 
+/// - [`Signaled::signals`]: [`Arc<Mutex<Vec<Signal<T>>>>`] The collection of [`Signal`]s that are emitted through [`Signaled::emit_signals()`] or [`Signaled::set()`] similar methods.
+/// 
+/// - [`Signaled::throttle_instant`]: [`Arc<Mutex<Instant>>`] used as reference for throttling.
+/// 
+/// - [`Signaled::throttle_duration`]: [`Arc<Mutex<Duration>>`] the duration of the throttle configured through [`Signaled::set_throttle_duration()`].
 ///
 /// # Examples
 ///
@@ -718,9 +762,9 @@ macro_rules! signal_sync {
 /// signaled.set(42).unwrap(); // Prints "Old: 0 | New: 42"
 /// ```
 pub struct Signaled<T: Send + Sync + 'static> {
-    /// Reactive value, the mutation of this value through `set` will emit all [`Signal`] inside `signals`.
+    /// Reactive value, the mutation of this value through [`Signaled::set`] will emit all [`Signal`] inside [`Signaled::signals`].
     val: RwLock<T>,
-    /// Collection of [`Signal`]s that will be emitted when `val` is changed through `set`.
+    /// Collection of [`Signal`]s that will be emitted when [`Signaled::val`] is changed through [`Signaled::set`].
     signals: Arc<Mutex<Vec<Signal<T>>>>,
 
     /// Instant to use as reference for throttling.
@@ -734,7 +778,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Arguments
     ///
-    /// * `val` - The initial value.
+    /// * `val` - The initial value for [`Signaled::val`].
     pub fn new(val: T) -> Self {
         Self {
             val: RwLock::new(val),
@@ -744,15 +788,15 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Sets a new value for `val` and emits all [`Signal`]s.
+    /// Sets a new value for [`Signaled::val`] and emits all [`Signal`]s.
     ///
     /// # Arguments
     ///
-    /// * `new_value` - The new value of the [`Signaled`].
+    /// * `new_value` - The new value of [`Signaled::val`].
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if `val`, `signals` or [`Signal`]s inside `signals` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if [`Signaled::val`], [`Signaled::signals`] or [`Signal`]s inside [`Signaled::signals`] locks are poisoned.
     ///
     /// # Examples
     ///
@@ -777,19 +821,19 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         self.emit_signals(&old_value, &guard)
     }
 
-    /// Sets a new value for `val` and emits all [`Signal`]s.
+    /// Sets a new value for [`Signaled::val`] and emits all [`Signal`]s.
     ///
-    /// This function unlike [`Signaled::set`], is non-blocking so there are no re-entrant calls that block until the lock for `val` is acquired.
+    /// This function unlike [`Signaled::set`], is non-blocking so there are no re-entrant calls that block until the lock for [`Signaled::val`] is acquired.
     ///
     /// # Arguments
     ///
-    /// * `new_value` - The new value of the [`Signaled`].
+    /// * `new_value` - The new value of [`Signaled::val`].
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if `val`, `signals` or [`Signal`]s inside `signals` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if [`Signaled::val`], [`Signaled::signals`] or [`Signal`]s inside [`Signaled::signals`] locks are poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if `val`, `signals` or [`Signal`]s inside `signals` locks are held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if [`Signaled::val`], [`Signaled::signals`] or [`Signal`]s inside [`Signaled::signals`] locks are held elsewhere.
     ///
     /// # Examples
     ///
@@ -813,15 +857,15 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         self.try_emit_signals(&old_value, &*guard)
     }
 
-    /// Sets a new value for `val` without emitting `signals`.
+    /// Sets a new value for [`Signaled::val`] without emitting [`Signaled::signals`].
     ///
     /// # Arguments
     ///
-    /// * `new_value` - The new value of the [`Signaled`].
+    /// * `new_value` - The new value of [`Signaled::val`].
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if [`Signaled::val`] lock is poisoned.
     ///
     /// # Examples
     ///
@@ -847,19 +891,19 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         Ok(())
     }
 
-    /// Sets a new value for `val` without emitting `signals`.
+    /// Sets a new value for [`Signaled::val`] without emitting [`Signaled::signals`].
     ///
-    /// This function unlike [`Signaled::set_silent`], is non-blocking so there are no re-entrant calls that block until the lock for `val` is acquired.
+    /// This function unlike [`Signaled::set_silent`], is non-blocking so there are no re-entrant calls that block until the lock for [`Signaled::val`] is acquired.
     ///
     /// # Arguments
     ///
-    /// * `new_value` - The new value of the [`Signaled`].
+    /// * `new_value` - The new value of [`Signaled::val`].
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if [`Signaled::val`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if `val` lock is held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if [`Signaled::val`] lock is held elsewhere.
     ///
     /// # Examples
     ///
@@ -884,17 +928,17 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         Ok(())
     }
 
-    /// Sets a new value for `val` without emitting `signals`, but only if enough time
+    /// Sets a new value for [`Signaled::val`] without emitting [`Signaled::signals`], but only if enough time
     /// has passed since the previous throttled update.
     ///
     /// # Arguments
     ///
-    /// * `new_value` - The new value of the [`Signaled`].
+    /// * `new_value` - The new value of [`Signaled::val`].
     ///
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
-    /// `throttle_instant`, `throttle_duration`, `val`, or `signals` are poisoned.
+    /// [`Signaled::throttle_instant`], [`Signaled::throttle_duration``], [`Signaled::val`], or [`Signaled::signals`] are poisoned.
     ///
     /// # Warnings
     ///
@@ -923,20 +967,20 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         Ok(())
     }
 
-    /// Sets a new value for `val` without emitting `signals`, but only if enough time
+    /// Sets a new value for [`Signaled::val`] without emitting [`Signaled::signals`], but only if enough time
     /// has passed since the previous throttled update.
     ///
     /// # Arguments
     ///
-    /// * `new_value` - The new value of the [`Signaled`].
+    /// * `new_value` - The new value of [`Signaled::val`].
     ///
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
-    /// `throttle_instant`, `throttle_duration` or `val` are poisoned.
+    /// [`Signaled::throttle_instant`], [`Signaled::throttle_duration`] or [`Signaled::val`] are poisoned.
     ///
     /// Returns [`SignaledError::WouldBlock`] if any of the underlying locks for
-    /// `throttle_instant`, `throttle_duration` or `val` are held elsewhere.
+    /// [`Signaled::throttle_instant`], [`Signaled::throttle_duration`] or [`Signaled::val`] are held elsewhere.
     pub fn try_set_silent_throttled(&self, new_value: T) -> Result<(), SignaledError> {
         let mut throttle_instant = self.throttle_instant.try_lock().map_err(|e| match e {
             TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
@@ -972,7 +1016,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `throttle_duration` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::throttle_duration`] lock is poisoned.
     ///
     /// # Warnings
     ///
@@ -992,7 +1036,7 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     /// Sets the minimum [`Duration`] that must elapse between consecutive calls to
     /// [`Signaled::set_throttled`].
     ///
-    /// This function unlike [`Signaled::set_throttle_duration`], is non-blocking so there are no re-entrant calls that block until the lock can be acquired.
+    /// This function unlike [`Signaled::set_throttle_duration`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::throttle_duration`] lock can be acquired.
     ///
     /// # Arguments
     ///
@@ -1000,9 +1044,9 @@ impl<T: Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `throttle_duration` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::throttle_duration`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `throttle_duration` lock is held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signaled::throttle_duration`] lock is held elsewhere.
     pub fn try_set_throttle_duration(&self, duration: Duration) -> Result<(), SignaledError> {
         *self.throttle_duration.try_lock().map_err(|e| match e {
             TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
@@ -1015,21 +1059,21 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         Ok(())
     }
 
-    /// Sets a new value for `val` and emits all [`Signal`]s, but only if enough time
+    /// Sets a new value for [`Signaled::val`] and emits all [`Signal`]s, but only if enough time
     /// has passed since the previous throttled update.
     ///
-    /// This method uses the configured [`throttle_duration`](Self::set_throttle_duration)
-    /// and the internal `throttle_instant` to prevent signals from being emitted
+    /// This method uses the [`Signaled::throttle_duration`] configured through [`Signaled::set_throttle_duration`]
+    /// and the internal [`Signaled::throttle_instant`] to prevent signals from being emitted
     /// more frequently than allowed.
     ///
     /// # Arguments
     ///
-    /// * `new_value` - The new value of the [`Signaled`].
+    /// * `new_value` - The new value of [`Signaled::val`].
     ///
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
-    /// `throttle_instant`, `throttle_duration`, `val`, or `signals` are poisoned.
+    /// [`Signaled::throttle_instant`], [`Signaled::throttle_duration`], [`Signaled::val`], or [`Signaled::signals`] are poisoned.
     ///
     /// # Examples
     ///
@@ -1087,26 +1131,26 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         Ok(())
     }
 
-    /// Sets a new value for `val` and emits all [`Signal`]s, but only if enough time
+    /// Sets a new value for [`Signaled::val`] and emits all [`Signal`]s, but only if enough time
     /// has passed since the previous throttled update.
     ///
-    /// This function unlike [`Signaled::set_throttled`], is non-blocking so there are no re-entrant calls that block until a lock can be acquired.
+    /// This function unlike [`Signaled::set_throttled`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::throttle_duration`] lock can be acquired.
     ///
-    /// This method uses the configured [`throttle_duration`](Self::set_throttle_duration)
-    /// and the internal `throttle_instant` to prevent signals from being emitted
+    /// This method uses the [`Signaled::throttle_duration`] configured through [`Signaled::set_throttle_duration`]
+    /// and the internal [`Signaled::throttle_instant`] to prevent signals from being emitted
     /// more frequently than allowed.
     ///
     /// # Arguments
     ///
-    /// * `new_value` - The new value of the [`Signaled`].
+    /// * `new_value` - The new value [`Signaled::val`].
     ///
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
-    /// `throttle_instant`, `throttle_duration`, `val`, or `signals` are poisoned.
+    /// [`Signaled::throttle_instant`], [`Signaled::throttle_duration`], [`Signaled::val`], or [`Signaled::signals`] are poisoned.
     ///
     /// Returns [`SignaledError::WouldBlock`] if any of the underlying locks for
-    /// `throttle_instant`, `throttle_duration`, `val`, or `signals` are held elsewhere.
+    /// [`Signaled::throttle_instant`], [`Signaled::throttle_duration`], [`Signaled::val`], or [`Signaled::signals`] are held elsewhere.
     pub fn try_set_throttled(&self, new_value: T) -> Result<(), SignaledError> {
         let mut throttle_instant = self.throttle_instant.try_lock().map_err(|e| match e {
             TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
@@ -1134,11 +1178,11 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         Ok(())
     }
 
-    /// Returns the lock of the current value.
+    /// Returns the lock of the current [`Signaled::val`].
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if [`Signaled::val`] lock is poisoned.
     ///
     /// # Warnings
     ///
@@ -1154,15 +1198,15 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Returns the lock of the current value.
+    /// Returns the lock of the current [`Signaled::val`].
     ///
-    /// This function unlike [`Signaled::get_lock`], is non-blocking so there are no re-entrant calls that block until the lock is acquired.
+    /// This function unlike [`Signaled::get_lock`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::val`] lock is acquired.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if [`Signaled::val`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if `val` lock is held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if [`Signaled::val`] lock is held elsewhere.
     pub fn try_get_lock(&self) -> Result<RwLockReadGuard<'_, T>, SignaledError> {
         match self.val.try_read() {
             Ok(r) => Ok(r),
@@ -1175,11 +1219,11 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Emits all [`Signal`]s in descending priority order, invoking their callbacks if their trigger condition is met.
+    /// Emits all [`Signal`]s in [`Signaled::signals`] in descending priority order, invoking their callbacks if their trigger condition is met.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock or [`Signal`]s inside `signals` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock or [`Signal`]s inside [`Signaled::signals`] locks are poisoned.
     ///
     /// # Warnings
     ///
@@ -1214,15 +1258,15 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Emits all [`Signal`]s in descending priority order, invoking their callbacks if their trigger condition is met.
+    /// Emits all [`Signal`]s in [`Signaled::signals`] in descending priority order, invoking their callbacks if their trigger condition is met.
     ///
-    /// This function unlike [`Signaled::emit_signals`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::emit_signals`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::signals`] lock can be acquired.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock or [`Signal`]s inside `signals` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock or [`Signal`]s inside [`Signaled::signals`] locks are poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `signals` lock or [`Signal`]s inside `signals` locks are held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signaled::signals`] lock or [`Signal`]s inside [`Signaled::signals`] locks are held elsewhere.
     fn try_emit_signals(&self, old: &T, new: &T) -> Result<(), SignaledError> {
         match self.signals.try_lock() {
             Ok(mut signals) => {
@@ -1254,16 +1298,16 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Adds a signal to the collection, returning its [`SignalId`].
+    /// Adds a [`Signal`] to the [`Signaled::signals`] collection, returning its [`SignalId`].
     ///
-    /// If a [`Signal`] with the same `id` is already in the collection, returns the existing `id` without adding the [`Signal`] to the collection.
+    /// If a [`Signal`] with the same [`SignalId`] is already in the collection, returns the existing [`SignalId`] without adding the [`Signal`] to the collection.
     ///
     /// # Arguments
     /// * `signal` - The [`Signal`] to add.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock is poisoned.
     ///
     /// # Warnings
     ///
@@ -1286,20 +1330,20 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Adds a signal to the collection, returning its [`SignalId`].
+    /// Adds a [`Signal`] to the [`Signaled::signals`] collection, returning its [`SignalId`].
     ///
-    /// If a [`Signal`] with the same `id` is already in the collection, returns the existing `id` without adding the [`Signal`] to the collection.
+    /// If a [`Signal`] with the same [`SignalId`] is already in the collection, returns the existing [`SignalId`] without adding the [`Signal`] to the collection.
     ///
-    /// This function unlike [`Signaled::add_signal`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::add_signal`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::signals`] lock can be acquired.
     ///
     /// # Arguments
     /// * `signal` - The [`Signal`] to add.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signaled::signals`] lock is held elsewhere.
     pub fn try_add_signal(&self, signal: Signal<T>) -> Result<SignalId, SignaledError> {
         match self.signals.try_lock() {
             Ok(mut s) => {
@@ -1319,17 +1363,17 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Removes a [`Signal`] by `id`, returning the removed [`Signal`].
+    /// Removes a [`Signal`] by [`SignalId`] from [`Signaled::signals`], returning the removed [`Signal`].
     ///
     /// # Arguments
     ///
-    /// * `id` - The `id` of the [`Signal`] to remove.
+    /// * `id` - The [`SignalId`] of the [`Signal`] to remove.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the [`SignalId`] does not match any [`Signal::id`].
     ///
     /// # Warnings
     ///
@@ -1351,21 +1395,21 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Removes a [`Signal`] by `id`, returning the removed [`Signal`].
+    /// Removes a [`Signal`] by [`SignalId`] from the [`Signaled::signals`] collection, returning the removed [`Signal`].
     ///
-    /// This function unlike [`Signaled::remove_signal`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::remove_signal`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::signals`] lock can be acquired.
     ///
     /// # Arguments
     ///
-    /// * `id` - The `id` of the [`Signal`] to remove.
+    /// * `id` - The [`SignalId`] of the [`Signal`] to remove.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signaled::signals`] lock is held elsewhere.
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the [`SignalId`] does not match any [`Signal::id`].
     pub fn try_remove_signal(&self, id: SignalId) -> Result<Signal<T>, SignaledError> {
         match self.signals.try_lock() {
             Ok(mut s) => {
@@ -1384,18 +1428,18 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Sets the callback for a [`Signal`] by `id`.
+    /// Sets the [`Signal::callback`] of a [`Signal`] by [`SignalId`].
     ///
     /// # Arguments
     ///
-    /// * `id` - The `id` of the [`Signal`].
-    /// * `callback` - The new callback function.
+    /// * `id` - The [`Signal`] of the [`Signal`].
+    /// * `callback` - The new [`Signal::callback`] function.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `callback` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] or the targeted [`Signal::callback`] locks are poisoned.
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the [`SignalId`] does not match any [`Signal::id`].
     ///
     /// # Warnings
     ///
@@ -1420,22 +1464,22 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Sets the callback for a [`Signal`] by `id`.
+    /// Sets the [`Signal::callback`] of a [`Signal`] by [`SignalId`].
     ///
-    /// This function unlike [`Signaled::set_signal_callback`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::set_signal_callback`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::signals`] lock can be acquired.
     ///
     /// # Arguments
     ///
-    /// * `id` - The `id` of the [`Signal`].
-    /// * `callback` - The new callback function.
+    /// * `id` - The [`SignalId`] of the [`Signal`].
+    /// * `callback` - The new [`Signal::callback`] function.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `callback` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] or the targeted [`Signal::callback`] locks are poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `signals` or the targeted [`Signal`] callback are held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signaled::signals`] or the targeted [`Signal::callback`] locks are held elsewhere.
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the [`SignalId`] does not match any [`Signal::id`].
     pub fn try_set_signal_callback<F: Fn(&T, &T) + Send + Sync + 'static>(
         &self,
         id: SignalId,
@@ -1456,18 +1500,18 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Sets the trigger condition for a [`Signal`] by `id`.
+    /// Sets the [`Signal::trigger`] condition for a [`Signal`] by [`SignalId`].
     ///
     /// # Arguments
     ///
-    /// * `id` - The `id` of the [`Signal`].
-    /// * `trigger` - The new trigger function.
+    /// * `id` - The [`SignalId`] of the [`Signal`].
+    /// * `trigger` - The new [`Signal::trigger`] function.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `trigger` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] or the targeted [`Signal::trigger`] locks are poisoned.
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the [`SignalId`] does not match any [`Signal::id`].
     ///
     /// # Warnings
     ///
@@ -1492,22 +1536,22 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Sets the trigger condition for a [`Signal`] by `id`.
+    /// Sets the [`Signal::trigger`] condition for a [`Signal`] by [`SignalId`].
     ///
-    /// This function unlike [`Signaled::set_signal_trigger`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::set_signal_trigger`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::signals`] lock can be acquired.
     ///
     /// # Arguments
     ///
-    /// * `id` - The `id` of the [`Signal`].
-    /// * `trigger` - The new trigger function.
+    /// * `id` - The [`SignalId`] of the [`Signal`].
+    /// * `trigger` - The new [`Signal::trigger`] function.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `trigger` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] or the targeted [`Signal::trigger`] locks are poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `signals` or the targeted [`Signal`] `trigger` locks are held elsewhere.
-    ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signaled::signals`] or the targeted [`Signal::trigger`] locks are held elsewhere.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the [`SignalId`] does not match any [`Signal::id`].
     pub fn try_set_signal_trigger<F: Fn(&T, &T) -> bool + Send + Sync + 'static>(
         &self,
         id: SignalId,
@@ -1528,17 +1572,17 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Sets the [`Signal`] `trigger` to always return true by `id`
+    /// Sets the [`Signal::trigger`] to always return `true` by [`SignalId`]
     ///
     /// # Arguments
     ///
-    /// * `id` - The `id` of the [`Signal`].
+    /// * `id` - The [`SignalId`] of the [`Signal`].
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `trigger` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] or the targeted [`Signal::trigger`] locks are poisoned.
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the [`SignalId`] does not match any [`Signal::id`].
     ///
     /// # Warnings
     ///
@@ -1559,21 +1603,21 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Sets the [`Signal`] `trigger` to always return true by `id`
+    /// Sets the [`Signal::trigger`] to always return `true` by [`SignalId`]
     ///
-    /// This function unlike [`Signaled::remove_signal_trigger`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::remove_signal_trigger`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::signals`] lock can be acquired.
     ///
     /// # Arguments
     ///
-    /// * `id` - The `id` of the [`Signal`].
+    /// * `id` - The [`SignalId`] of the [`Signal`].
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or the targeted [`Signal`] `trigger` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] or the targeted [`Signal::trigger`] locks are poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `signals` or the targeted [`Signal`] `trigger` locks are held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signaled::signals`] or the targeted [`Signal::trigger`] locks are held elsewhere.
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the [`SignalId`] does not match any [`Signal::id`].
     pub fn try_remove_signal_trigger(&self, id: SignalId) -> Result<(), SignaledError> {
         let signals = self.signals.try_lock().map_err(|e| match e {
             TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
@@ -1590,18 +1634,18 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Sets the priority for a [`Signal`] by `id`.
+    /// Sets the [`Signal::priority`] for a [`Signal`] by [`SignalId`].
     ///
     /// # Arguments
     ///
-    /// * `id` - The `id` of the [`Signal`].
-    /// * `priority` - The new priority value (higher executes first).
+    /// * `id` - The [`SignalId`] of the [`Signal`].
+    /// * `priority` - The new [`Signal::priority`] value (higher executes first).
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the [`SignalId`] does not match any [`Signal::id`].
     ///
     /// # Warnings
     ///
@@ -1623,22 +1667,22 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Sets the priority for a [`Signal`] by `id`.
+    /// Sets the [`Signal::priority`] for a [`Signal`] by [`SignalId`].
     ///
-    /// This function unlike [`Signaled::set_signal_priority`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::set_signal_priority`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::signals`] lock can be acquired.
     ///
     /// # Arguments
     ///
-    /// * `id` - The `id` of the [`Signal`].
-    /// * `priority` - The new priority value (higher executes first).
+    /// * `id` - The [`SignalId`] of the [`Signal`].
+    /// * `priority` - The new [`Signal::priority`] value (higher executes first).
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signaled::signals`] lock is held elsewhere.
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the [`SignalId`] does not match any [`Signal::id`].
     pub fn try_set_signal_priority(
         &self,
         id: SignalId,
@@ -1660,18 +1704,18 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Sets the `once` flag for a [`Signal`] by `id`.
+    /// Sets the [`Signal::once`] flag for a [`Signal`] by [`SignalId`].
     ///
     /// # Arguments
     ///
-    /// * `id` - The `id` of the [`Signal`].
-    /// * `is_once` - Boolean that decides if the target [`Signal`] should be `once` or not.
+    /// * `id` - The [`SignalId`] of the [`Signal`].
+    /// * `is_once` - Boolean that represents the new [`Signaled::once`] value.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the [`SignalId`] does not match any [`Signal::id`].
     ///     
     /// # Warnings
     ///
@@ -1693,22 +1737,22 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Sets the `once` flag for a [`Signal`] by `id`.
+    /// Sets the [`Signal::once`] flag for a [`Signal`] by [`SignalId`].
     ///
-    /// This function unlike [`Signaled::set_signal_once`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::set_signal_once`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::signals`] lock can be acquired.
     ///
     /// # Arguments
     ///
-    /// * `id` - The `id` of the [`Signal`].
-    /// * `is_once` - Boolean that decides if the target [`Signal`] should be `once` or not.
+    /// * `id` - The [`SignalId`] of the [`Signal`].
+    /// * `is_once` - Boolean that represents the new [`Signal::once`] value.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signaled::signals`] lock is held elsewhere.
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the [`SignalId`] does not match any [`Signal::id`].
     pub fn try_set_signal_once(&self, id: SignalId, is_once: bool) -> Result<(), SignaledError> {
         let signals = self.signals.try_lock().map_err(|e| match e {
             TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
@@ -1726,18 +1770,18 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Sets the `mute` flag for a [`Signal`] by `id`.
+    /// Sets the [`Signal::mute`] flag for a [`Signal`] by [`SignalId`].
     ///
     /// # Arguments
     ///
-    /// * `id` - The `id` of the [`Signal`].
-    /// * `is_mute` - Boolean that decides if the target [`Signal`] should be muted or not.
+    /// * `id` - The [`SignalId`] of the [`Signal`].
+    /// * `is_mute` - Boolean that represents the new [`Signal::mute`]
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the [`SignalId`] does not match any [`Signal::id`].
     ///
     /// # Warnings
     ///
@@ -1759,22 +1803,22 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Sets the `mute` flag for a [`Signal`] by `id`.
+    /// Sets the [`Signal::mute`] flag for a [`Signal`] by [`SignalId`].
     ///
-    /// This function unlike [`Signaled::set_signal_mute`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::set_signal_mute`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::signals`] lock can be acquired.
     ///
     /// # Arguments
     ///
-    /// * `id` - The `id` of the [`Signal`].
-    /// * `is_mute` - Boolean that decides if the target [`Signal`] should be muted or not.
+    /// * `id` - The [`SignalId`] of the [`Signal`].
+    /// * `is_mute` - Boolean that represents the new [`Signal::mute`]
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signaled::signals`] lock is held elsewhere
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the `id` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the [`SignalId`] does not match any [`Signal::id`].
     pub fn try_set_signal_mute(&self, id: SignalId, is_mute: bool) -> Result<(), SignaledError> {
         let signals = self.signals.try_lock().map_err(|e| match e {
             TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
@@ -1792,24 +1836,24 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Combines multiple [`Signal`]s by their `id` into a single [`Signal`] consuming the [`Signal`] instances associated with the provided `id`s.
+    /// Combines multiple [`Signal`]s by their [`SignalId`] into a single [`Signal`] consuming the [`Signal`] instances associated with the provided [`SignalId`]s.
     ///
-    /// This function finds signals by their `id`, removes them from the `Signaled` instance,
+    /// This function finds signals by their [`Signal::id`], removes them from the [`Signaled::signals`] instance,
     /// and then uses [`Signal::combine()`] to create a new, single [`Signal`] instance.
-    /// This new combined signal is then added back to the `signals` collection and its new `SignalId` is returned.
+    /// This new combined signal is then added back to the [`Signaled::signals`] collection and its new [`SignalId`] is returned.
     ///
     /// For more details about the combination process,
     /// see the documentation for [`Signal::combine()`].
     ///
     /// # Arguments
     ///
-    /// * `signal_ids` A slice containing the `id`s of the [`Signal`]s that will be combined into a single [`Signal`].
+    /// * `signal_ids` A slice containing the [`SignalId`]s of the [`Signal`]s that will be combined into a single [`Signal`].
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or any target [`Signal`] `callback` or `trigger` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] or any target [`Signal::callback`] or [`Signal::trigger`] locks are poisoned.
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the any of the provided `SignalId` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the any of the provided [`SignalId`] does not match any [`Signal::id`].
     ///
     /// # Examples
     /// ```
@@ -1875,28 +1919,28 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         Ok(id)
     }
 
-    /// Combines multiple [`Signal`]s by their `id` into a single [`Signal`] consuming the [`Signal`] instances associated with the provided `id`s.
+    /// Combines multiple [`Signal`]s by their [`SignalId`] into a single [`Signal`] consuming the [`Signal`] instances associated with the provided [`SignalId`]s.
     ///
-    /// This function unlike [`Signaled::combine_signals`], is non-blocking so there are no re-entrant calls that block until the `signals` lock can be acquired.
+    /// This function unlike [`Signaled::combine_signals`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::signals`] lock can be acquired.
     ///
-    /// This function finds signals by their `id`, removes them from the `Signaled` instance,
-    /// and then uses [`Signal::try_combine()`] to create a new, single [`Signal`] instance.
-    /// This new combined signal is then added back to the `signals` collection and its new `SignalId` is returned.
+    /// This function finds signals by their [`Signal::id`], removes them from the [`Signaled::signals`] instance,
+    /// and then uses [`Signal::combine()`] to create a new, single [`Signal`] instance.
+    /// This new combined signal is then added back to the [`Signaled::signals`] collection and its new [`SignalId`] is returned.
     ///
     /// For more details about the combination process,
-    /// see the documentation for [`Signal::try_combine()`].
+    /// see the documentation for [`Signal::combine()`].
     ///
     /// # Arguments
     ///
-    /// * `signal_ids` A slice containing the `id`s of the [`Signal`]s that will be combined into a single [`Signal`].
+    /// * `signal_ids` A slice containing the [`SignalId`]s of the [`Signal`]s that will be combined into a single [`Signal`].
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if the `signals` or any target [`Signal`] `callback` or `trigger` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] or any target [`Signal::callback`] or [`Signal::trigger`] locks are poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if the `signals` lock is held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signaled::signals`] lock is held elsewhere.
     ///
-    /// Returns [`SignaledError::InvalidSignalId`] if the any of the provided `SignalId` does not match any [`Signal`].
+    /// Returns [`SignaledError::InvalidSignalId`] if the any of the provided [`SignalId`] does not match any [`Signal::id`].
     ///
     /// # Examples
     /// ```
@@ -1957,6 +2001,158 @@ impl<T: Send + Sync + 'static> Signaled<T> {
         signals.push(combined_signal);
         Ok(id)
     }
+
+    /// Returns a [`Vec<SignalInfo>`] containing a [`SignalInfo`] for each [`Signal`] present in [`Signaled::signals`] (private field).
+    /// 
+    /// # Errors 
+    ///    
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock is poisoned.
+    /// 
+    /// # Warnings
+    /// 
+    /// This function may result in a deadlock if used incorrectly.
+    ///
+    /// For a non-blocking alternative, see [`Signaled::try_get_signals_info`].
+    pub fn get_signals_info(&self) -> Result<Vec<SignalInfo>, SignaledError> {
+        let signals = self
+            .signals
+            .lock()
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            })?
+            .iter()
+            .map(|s| s.get_info())
+            .collect();
+        Ok(signals)
+    }
+
+    /// Returns a [`Vec<SignalInfo>`] containing a [`SignalInfo`] for each [`Signal`] present in [`Signaled::signals`] (private field).
+    /// 
+    /// This function unlike [`Signaled::get_signals_info`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::signals`] lock can be acquired.
+    /// 
+    /// # Errors 
+    ///    
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signaled::signals`] lock is currently held elsewhere.
+    pub fn try_get_signals_info(&self) -> Result<Vec<SignalInfo>, SignaledError> {
+        let signals = self
+            .signals
+            .try_lock()
+            .map_err(|e| match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                    source: ErrorSource::Signals,
+                },
+                TryLockError::WouldBlock => SignaledError::WouldBlock {
+                    source: ErrorSource::Signals,
+                },
+            })?
+            .iter()
+            .map(|s| s.get_info())
+            .collect();
+        Ok(signals)
+    }
+
+    /// Returns the [`SignalInfo`] belonging to the [`Signal`] that matches the specified [`SignalId`].
+    /// 
+    /// # Errors
+    /// 
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the provided [`SignalId`] does not match any [`Signal`].
+    /// 
+    /// # Warnings
+    /// 
+    /// This function may result in a deadlock if used incorrectly.
+    /// 
+    /// For a non-blocking alternative, see [`Signaled::try_get_signal_info`].
+    pub fn get_signal_info(&self, id: SignalId) -> Result<SignalInfo, SignaledError> {
+        let signals = self
+            .signals
+            .lock()
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            })?;
+        let signal_info = signals
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.get_info())
+            .ok_or(SignaledError::InvalidSignalId { id })?;
+        Ok(signal_info)
+    }
+
+    /// Returns the [`SignalInfo`] belonging to the [`Signal`] that matches the specified [`SignalId`].
+    /// 
+    /// This function unlike [`Signaled::get_signal_info`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::signals`] lock can be acquired.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::signals`] lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signaled::signals`] lock is currently held elsewhere.
+    /// 
+    /// Returns [`SignaledError::InvalidSignalId`] if the provided [`SignalId`] does not match any [`Signal`].
+    pub fn try_get_signal_info(&self, id: SignalId) -> Result<SignalInfo, SignaledError> {
+        let signals = self.signals.try_lock().map_err(|e| match e {
+            TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                source: ErrorSource::Signals,
+            },
+            TryLockError::WouldBlock => SignaledError::WouldBlock {
+                source: ErrorSource::Signals,
+            },
+        })?;
+        let signal_info = signals
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.get_info())
+            .ok_or(SignaledError::InvalidSignalId { id })?;
+        Ok(signal_info)
+    }
+
+    /// Returns the [`Signaled::throttle_duration`] (private field) that is configured through [`Signaled::set_throttle_duration`].
+    /// 
+    /// # Errors
+    /// 
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::throttle_duration`] lock is poisoned.
+    /// 
+    /// # Warnings
+    /// 
+    /// This function may result in a deadlock if used incorrectly.
+    /// 
+    /// For a non-blocking alternative, see [`Signaled::try_get_throttle_duration`].
+    pub fn get_throttle_duration(&self) -> Result<Duration, SignaledError> {
+        self
+            .throttle_duration
+            .lock()
+            .map(|guard| *guard)
+            .map_err(|_| SignaledError::PoisonedLock {
+                source: ErrorSource::ThrottleDuration,
+            })
+    }
+
+    /// Returns the [`Signaled::throttle_duration`] (private field) that is configured through [`Signaled::set_throttle_duration`].
+    /// 
+    /// This function unlike [`Signaled::get_throttle_duration`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::signals`] lock can be acquired. 
+    /// 
+    /// # Errors
+    /// 
+    /// Returns [`SignaledError::PoisonedLock`] if the [`Signaled::throttle_duration`] lock is poisoned.
+    /// 
+    /// Returns [`SignaledError::WouldBlock`] if the [`Signaled::throttle_duration`] lock is currently held elsewhere.
+    pub fn try_get_throttle_duration(&self) -> Result<Duration, SignaledError> {
+        self
+            .throttle_duration
+            .try_lock()
+            .map(|guard| *guard)
+            .map_err(|e| match e {
+                TryLockError::Poisoned(_) => SignaledError::PoisonedLock {
+                    source: ErrorSource::ThrottleDuration,
+                },
+                TryLockError::WouldBlock => SignaledError::WouldBlock {
+                    source: ErrorSource::ThrottleDuration,
+                },
+            })
+    }
 }
 
 impl<T: Display + Send + Sync + 'static> Display for Signaled<T> {
@@ -2004,17 +2200,18 @@ impl<T: Debug + Send + Sync + 'static> Debug for Signaled<T> {
 }
 
 impl<T: Clone + Send + Sync + 'static> Signaled<T> {
-    /// Sets a new value for `val` and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread.
+    /// Sets a new value for [`Signaled::val`] and emits all [`Signal`]s inside the [`Signaled::signals`] collection 
+    /// in a separated thread, returning a [`JoinHandle`] representing that thread.
     ///
     /// The returned [`JoinHandle`] will contain a [`SignaledError`] if any [`Signal`] emission failed.
     ///
     /// # Arguments
     ///
-    /// * `new_value` - The new value of the [`Signaled`].
+    /// * `new_value` - The new value of the [`Signaled::val`].
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if `val` or `signals` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if [`Signaled::val`] or [`Signaled::signals`] locks are poisoned.
     ///
     /// # Examples
     ///
@@ -2072,11 +2269,11 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
         Ok(handle)
     }
 
-    /// Sets a new value for `val` and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread.
+    /// Sets a new value for [`Signaled::val`] and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread.
     ///
     /// The returned [`JoinHandle`] will contain a [`SignaledError`] if any [`Signal`] emission failed.
     ///
-    /// This function unlike [`Signaled::set_and_spawn`], is non-blocking so there are no re-entrant calls that block until `val` or `signals` lock can be acquired.
+    /// This function unlike [`Signaled::set_and_spawn`], is non-blocking so there are no re-entrant calls that block until [`Signaled::val`] or [`Signaled::signals`] lock can be acquired.
     ///
     /// # Arguments
     ///
@@ -2084,9 +2281,9 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if `val` or `signals` locks are poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if [`Signaled::val`] or [`Signaled::signals`] locks are poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if `val` or `signals` locks are held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if [`Signaled::val`] or [`Signaled::signals`] locks are held elsewhere.
     ///
     /// # Examples
     ///
@@ -2146,23 +2343,23 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
         Ok(handle)
     }
 
-    /// Sets a new value for `val` and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread,
+    /// Sets a new value for [`Signaled::val`] and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread,
     /// but only if enough time has passed since the previous throttled update.
     ///
-    /// This method uses the configured [`throttle_duration`](Self::set_throttle_duration)
-    /// and the internal `throttle_instant` to prevent signals from being emitted
+    /// This method uses the [`Signaled::throttle_duration`] configured through [`Signaled::set_throttle_duration`]
+    /// and the internal [`Signaled::throttle_instant`] to prevent signals from being emitted
     /// more frequently than allowed.
     ///
     /// The returned [`JoinHandle`] will contain a [`SignaledError`] if any [`Signal`] emission failed.
     ///
     /// # Arguments
     ///
-    /// * `new_value` - The new value of the [`Signaled`].
+    /// * `new_value` - The new value of the [`Signaled::val`].
     ///
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
-    /// `throttle_instant`, `throttle_duration`, `val` or `signals` locks are poisoned.
+    /// [`Signaled::throttle_instant`], [`Signaled::throttle_duration`], [`Signaled::val`] or [`Signaled::signals`] locks are poisoned.
     ///
     /// # Examples
     ///
@@ -2255,13 +2452,13 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
         Ok(handle)
     }
 
-    /// Sets a new value for `val` and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread,
+    /// Sets a new value for [`Signaled::val`] and emits all [`Signal`]s in a separated thread, returning a [`JoinHandle`] representing that thread,
     /// but only if enough time has passed since the previous throttled update.
     ///
     /// This function unlike [`Signaled::set_throttled_and_spawn`], is non-blocking so there are no re-entrant calls that block until the lock can be acquired.
     ///
-    /// This method uses the configured [`throttle_duration`](Self::set_throttle_duration)
-    /// and the internal `throttle_instant` to prevent signals from being emitted
+    /// This method uses the [`Signaled::throttle_duration`] configured through [`Signaled::set_throttle_duration`]
+    /// and the internal [`Signaled::throttle_instant`] to prevent signals from being emitted
     /// more frequently than allowed.
     ///
     /// The returned [`JoinHandle`] will contain a [`SignaledError`] if any [`Signal`] emission failed.
@@ -2273,10 +2470,10 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
     /// # Errors
     ///
     /// Returns [`SignaledError::PoisonedLock`] if any of the underlying locks for
-    /// `throttle_instant`, `throttle_duration`, `val` or `signals` locks are poisoned.
+    /// [`Signaled::throttle_instant`], [`Signaled::throttle_duration`], [`Signaled::val`] or [`Signaled::signals`] locks are poisoned.
     ///
     /// Returns [`SignaledError::WouldBlock`] if any of the underlying locks for
-    /// `throttle_instant`, `throttle_duration`, `val` or `signals` locks are held elsewhere.
+    /// [`Signaled::throttle_instant`], [`Signaled::throttle_duration`], [`Signaled::val`] or [`Signaled::signals`] locks are held elsewhere.
     pub fn try_set_throttled_and_spawn(
         &self,
         new_value: T,
@@ -2347,11 +2544,11 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
         Ok(handle)
     }
 
-    /// Returns a cloned copy of the current value.
+    /// Returns a cloned copy of the current [`Signaled::val`] value.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if [`Signaled::val`] lock is poisoned.
     ///
     /// # Warnings
     ///
@@ -2367,15 +2564,15 @@ impl<T: Clone + Send + Sync + 'static> Signaled<T> {
         }
     }
 
-    /// Returns a cloned copy of the current value.
+    /// Returns a cloned copy of the current [`Signaled::val`] value.
     ///
-    /// This function unlike [`Signaled::get`], is non-blocking so there are no re-entrant calls that block until the lock is acquired.
+    /// This function unlike [`Signaled::get`], is non-blocking so there are no re-entrant calls that block until the [`Signaled::val`] lock is acquired.
     ///
     /// # Errors
     ///
-    /// Returns [`SignaledError::PoisonedLock`] if `val` lock is poisoned.
+    /// Returns [`SignaledError::PoisonedLock`] if [`Signaled::val`] lock is poisoned.
     ///
-    /// Returns [`SignaledError::WouldBlock`] if `val` lock is held elsewhere.
+    /// Returns [`SignaledError::WouldBlock`] if [`Signaled::val`] lock is held elsewhere.
     pub fn try_get(&self) -> Result<T, SignaledError> {
         match self.val.try_read() {
             Ok(r) => Ok(r.clone()),
@@ -2730,7 +2927,7 @@ mod tests {
             handle.join().unwrap();
         }
 
-        assert_eq!(*calls.lock().unwrap(), 1); // Signal is `once` so the first thread that calls it removes it from the `signals` collection.
+        assert_eq!(*calls.lock().unwrap(), 1); // [`Signal`] is `once` so the first thread that calls it removes it from the [`Signaled::signals`] collection.
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -3111,5 +3308,41 @@ mod tests {
             .unwrap();
 
         signaled.set(1).unwrap();
+    }
+
+    #[test]
+    fn test_get_signals_info() {
+        let signaled = Signaled::new(());
+        let signal_a_id = signaled.add_signal(signal_sync!(|_, _| {}, |_, _| true, 7, false, true)).unwrap();
+        let signal_b_id = signaled.add_signal(signal_sync!(|_, _| {}, |_, _| true, 3, true, false)).unwrap();
+
+        let signals = signaled.get_signals_info().unwrap();
+        assert_eq!(signals[0], SignalInfo { id: signal_a_id, priority: 7, once: false, mute: true});
+        assert_eq!(signals[1], SignalInfo { id: signal_b_id, priority: 3, once: true, mute: false});
+        
+        let signals = signaled.try_get_signals_info().unwrap();
+        assert_eq!(signals[0], SignalInfo { id: signal_a_id, priority: 7, once: false, mute: true});
+        assert_eq!(signals[1], SignalInfo { id: signal_b_id, priority: 3, once: true, mute: false});
+    }
+
+    #[test]
+    fn test_get_signal_info() {
+        let signaled = Signaled::new(());
+        let signal_a_id = signaled.add_signal(signal_sync!(|_, _| {}, |_, _| true, 7, false, true)).unwrap();
+
+        let signal_a_info = signaled.get_signal_info(signal_a_id).unwrap();
+        assert_eq!(signal_a_info, SignalInfo { id: signal_a_id, priority: 7, once: false, mute: true});
+
+        let signal_a_info = signaled.try_get_signal_info(signal_a_id).unwrap();
+        assert_eq!(signal_a_info, SignalInfo { id: signal_a_id, priority: 7, once: false, mute: true});
+    }
+
+    #[test]
+    fn test_get_throttle_duration() {
+        let signaled = Signaled::new(());
+        signaled.set_throttle_duration(Duration::from_millis(500)).unwrap();
+
+        assert_eq!(Duration::from_millis(500), signaled.get_throttle_duration().unwrap());
+        assert_eq!(Duration::from_millis(500), signaled.try_get_throttle_duration().unwrap());
     }
 }
